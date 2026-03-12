@@ -102,14 +102,14 @@ main() {
               "check that ${VERSION} exists at ${RELEASES}"
 
     info "verifying checksum..."
-    download "${release_url}/SHA256SUMS" "${tmp_dir}/SHA256SUMS" ||
-        error "failed to download SHA256SUMS" \
+    checksum_file="${binary_name}.sha256"
+    download "${release_url}/${checksum_file}" "${tmp_dir}/${checksum_file}" ||
+        error "failed to download ${checksum_file}" \
               "cannot verify binary integrity"
 
-    # Anchor with $ to prevent prefix matches (e.g. "bx-1.0.0-linux-amd64-musl").
-    expected=$(grep "  ${binary_name}$" "${tmp_dir}/SHA256SUMS" | cut -d' ' -f1)
+    expected=$(cut -d' ' -f1 < "${tmp_dir}/${checksum_file}")
     [ -n "$expected" ] ||
-        error "checksum for ${binary_name} not found in SHA256SUMS"
+        error "checksum not found in ${checksum_file}"
 
     if available sha256sum; then
         actual=$(sha256sum "${tmp_dir}/${binary_name}" | cut -d' ' -f1)

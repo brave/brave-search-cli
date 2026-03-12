@@ -5,7 +5,7 @@
 # verifies SHA256 checksum, and installs to a user directory.
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.ps1 | iex"
 #
 # Or with a specific version/install directory:
 #   .\install.ps1 -Version v1.0.0 -InstallDir "$env:USERPROFILE\.local\bin"
@@ -139,7 +139,6 @@ New-Item -ItemType Directory -Path $tmpDir | Out-Null
 try {
     # --- download ---
     $binaryPath = Join-Path $tmpDir $binaryName
-    $checksumPath = Join-Path $tmpDir "SHA256SUMS"
 
     Write-Info "downloading $binaryName..."
     try {
@@ -150,19 +149,19 @@ try {
 
     # --- checksum verification (mandatory) ---
     Write-Info "verifying checksum..."
+    $checksumFile = "$binaryName.sha256"
+    $checksumPath = Join-Path $tmpDir $checksumFile
     try {
-        Download-File -Url "$releaseUrl/SHA256SUMS" -OutFile $checksumPath
+        Download-File -Url "$releaseUrl/$checksumFile" -OutFile $checksumPath
     } catch {
-        Fail "failed to download SHA256SUMS" "cannot verify binary integrity"
+        Fail "failed to download $checksumFile" "cannot verify binary integrity"
     }
 
-    $escapedName = [Regex]::Escape($binaryName)
-    $line = Select-String -Path $checksumPath -Pattern "^(?<hash>[A-Fa-f0-9]{64})\s{2,}$escapedName$" | Select-Object -First 1
-    if (-not $line) {
-        Fail "checksum for $binaryName not found in SHA256SUMS"
+    $checksumContent = (Get-Content -Path $checksumPath -Raw).Trim()
+    $expected = ($checksumContent -split '\s')[0].ToLowerInvariant()
+    if (-not ($expected -match '^[A-Fa-f0-9]{64}$')) {
+        Fail "invalid checksum in $checksumFile"
     }
-
-    $expected = $line.Matches[0].Groups["hash"].Value.ToLowerInvariant()
     $actual = (Get-FileHash -Algorithm SHA256 -Path $binaryPath).Hash.ToLowerInvariant()
 
     if ($expected -ne $actual) {
