@@ -1,0 +1,76 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - run: cargo fmt --check
+
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b # v2.9.0
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b # v2.9.0
+
+      - run: cargo test
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1.2.7
+        with:
+          createIssues: false
+
+  build:
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linux-amd64
+          - target: linux-arm64
+          - target: darwin-arm64
+          - target: windows-amd64
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build ${{ matrix.target }}
+        run: make ${{ matrix.target }}
+
+      - name: Upload ${{ matrix.target }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bx-${{ matrix.target }}
+          path: dist/bx-*-${{ matrix.target }}*
+          if-no-files-found: error

@@ -1,0 +1,12 @@
+# Exclude secrets, history, and build artifacts from the Docker build context.
+# Without this, `COPY . .` sends .git history (which may contain secrets).
+.git/
+.github/
+target/
+dist/
+*.md
+.env*
+
+# Prevent rust-toolchain.toml from triggering a mid-build toolchain download
+# that conflicts with targets added earlier (causes "can't find crate for core").
+rust-toolchain.toml

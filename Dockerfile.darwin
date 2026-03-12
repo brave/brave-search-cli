@@ -1,0 +1,20 @@
+ARG TARGET=aarch64-apple-darwin
+
+# Pin by digest to prevent supply-chain tag-swap attacks.
+# Renovate will auto-update this digest when new versions are published.
+FROM ghcr.io/rust-cross/cargo-zigbuild:latest@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c AS builder
+ARG TARGET
+
+RUN rustup target add "$TARGET"
+
+WORKDIR /src
+COPY . .
+
+# strip=false: Rust's built-in strip corrupts aarch64-apple-darwin binaries
+# when cross-compiled via zigbuild (https://github.com/rust-cross/cargo-zigbuild/issues/50)
+RUN cargo zigbuild --release --target "$TARGET" \
+    --config profile.release.strip=false
+
+FROM scratch
+ARG TARGET
+COPY --from=builder /src/target/${TARGET}/release/bx /bx
