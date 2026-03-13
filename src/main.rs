@@ -3,24 +3,26 @@ mod config;
 
 use clap::{Args, Parser, Subcommand};
 
-/// Search the web via Brave's independent index (not Google/Bing). 40B+ pages, 100M+ refreshed daily.
+/// Search the Web via Brave's independent index. The only search API with its own Web index at
+/// scale. Truly independent, lightning-fast, and built to power AI apps. Private and secure, your
+/// queries never leave Brave.
 ///
 /// All commands output JSON to stdout, errors to stderr.
 /// API key: https://api-dashboard.search.brave.com
 ///
 /// WHICH COMMAND?
-///   Looking up docs, APIs, errors, code patterns? -> context (default, recommended)
-///   Need a synthesized answer with citations?     -> answers
-///   Need raw search results or result filtering?  -> web
+///   Looking up docs, APIs, errors, code patterns? → context (default, recommended)
+///   Need a synthesized answer with citations? → answers
+///   Need raw search results or result filtering? → web
 ///   Other: news, images, videos, places, suggest, spellcheck
-///   Restrict to / exclude specific domains?       -> --include-site / --exclude-site on context/web/news
-///   Custom ranking (boost docs, discard spam)?    -> --goggles on context/web/news
+///   Restrict to / exclude specific domains? → --include-site / --exclude-site on context/web/news
+///   Custom ranking (boost docs, discard spam)? → --goggles on context/web/news
 ///
 /// Quick start:
 ///   bx config set-key <YOUR_KEY>
-///   bx "tokio spawn async task example"    # RAG grounding (= bx context)
-///   bx answers "how does Rust's borrow checker work?"  # AI answer
-///   bx web "site:docs.rs reqwest" | jq .   # web search
+///   bx "tokio spawn async task example" # RAG grounding (= bx context)
+///   bx answers "how does Rust's borrow checker work?" # AI answer
+///   bx web "site:docs.rs reqwest" | jq . # web search
 #[derive(Parser)]
 #[command(name = "bx", version, verbatim_doc_comment)]
 struct Cli {
