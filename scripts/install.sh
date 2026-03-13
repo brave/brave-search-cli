@@ -108,8 +108,8 @@ main() {
               "cannot verify binary integrity"
 
     expected=$(cut -d' ' -f1 < "${tmp_dir}/${checksum_file}")
-    [ -n "$expected" ] ||
-        error "checksum not found in ${checksum_file}"
+    printf '%s' "$expected" | grep -qx '[0-9a-fA-F]\{64\}' ||
+        error "invalid checksum in ${checksum_file}"
 
     if available sha256sum; then
         actual=$(sha256sum "${tmp_dir}/${binary_name}" | cut -d' ' -f1)

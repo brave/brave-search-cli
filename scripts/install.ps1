@@ -157,8 +157,9 @@ try {
         Fail "failed to download $checksumFile" "cannot verify binary integrity"
     }
 
-    $checksumContent = (Get-Content -Path $checksumPath -Raw).Trim()
-    $expected = ($checksumContent -split '\s')[0].ToLowerInvariant()
+    $checksumContent = Get-Content -Path $checksumPath -Raw
+    if (-not $checksumContent) { Fail "invalid checksum in $checksumFile" }
+    $expected = ($checksumContent.Trim() -split '\s')[0].ToLowerInvariant()
     if (-not ($expected -match '^[A-Fa-f0-9]{64}$')) {
         Fail "invalid checksum in $checksumFile"
     }
