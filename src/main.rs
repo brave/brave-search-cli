@@ -3,7 +3,7 @@ mod config;
 
 use clap::{Args, Parser, Subcommand};
 
-/// Search the web via Brave's independent index. The only search API with its own Web index at
+/// Search the Web via Brave's independent index. The only search API with its own Web index at
 /// scale. Truly independent, lightning-fast, and built to power AI apps. Private and secure, your
 /// queries never leave Brave.
 ///
