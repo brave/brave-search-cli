@@ -8,7 +8,7 @@
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.ps1 | iex"
 #
 # Or with a specific version/install directory:
-#   .\install.ps1 -Version v1.0.0 -InstallDir "$env:USERPROFILE\.local\bin"
+#   .\install.ps1 -Version v1.1.0 -InstallDir "$env:USERPROFILE\.local\bin"
 
 [CmdletBinding()]
 param(

@@ -81,7 +81,6 @@ No API key found. To get started:
   2. Choose a plan — every plan includes $5/month free credits (~1,000 free queries)
      Note: different endpoints may require different plans (e.g. Search vs Answers)
   3. Go to \"API Keys\" in the dashboard and generate a key
-     The key is shown only once — save it immediately!
 
 Then configure it (pick one):
 
