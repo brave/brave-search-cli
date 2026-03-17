@@ -18,8 +18,9 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bra
 
 ```bash
 bx config set-key YOUR_API_KEY    # get a key at https://api-dashboard.search.brave.com
-bx "your search query"
-bx --help                        # see all commands; bx <command> --help for flags
+bx "your search query"            # shorthand for: bx context "your search query"
+bx --help                         # see all commands; bx <command> --help for flags
+# To search for a word matching a subcommand name: bx -- web  or  bx context "web"
 ```
 
 ## For AI Agents
@@ -240,7 +241,7 @@ Community Goggles: [brave/goggles-quickstart](https://github.com/brave/goggles-q
 1. Sign up at <https://api-dashboard.search.brave.com/register>
 2. Choose a plan — all plans include **$5/month free credits** (~1,000 free queries)
 3. Different endpoints may require different plans (e.g. Search vs Answers)
-4. Go to "API Keys" in the dashboard, generate a key (shown only once — save it!)
+4. Go to "API Keys" in the dashboard and generate a key
 
 ## Configuring the API Key
 

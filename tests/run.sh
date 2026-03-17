@@ -103,6 +103,19 @@ else pass "cli: config path"; fi
 run $BX "tokio spawn async task" --count 3
 check "default: implicit context" '.grounding.generic[0] | has("url", "snippets")'
 
+# -- inserts context before --, making the query a positional arg
+# NOTE: flags CANNOT come after -- (they'd become positionals), so no --count here
+run $BX -- "tokio spawn async task"
+check "default: -- passes query through" '.grounding.generic[0] | has("url", "snippets")'
+
+# Searching for a word that matches a subcommand name
+run $BX -- web
+check "default: -- disambiguates subcommand name" '.grounding.generic[0] | has("url", "snippets")'
+
+# Explicit subcommand also works for subcommand-name queries
+run $BX context web
+check "default: explicit context with subcommand-name query" '.grounding.generic[0] | has("url", "snippets")'
+
 # ── Web search ────────────────────────────────────────────────────────
 
 run $BX web "rust programming" --count 3
@@ -116,6 +129,19 @@ check "web: all location headers" '.web.results[0] | has("url", "title")'
 
 run $BX web "rust axum" --count 3 --goggles '$boost=3,site=docs.rs'
 check "web: goggles" '.web.results | length >= 1'
+
+# Repeatable --goggles: two flags joined with newlines
+run $BX web "rust axum" --count 3 --goggles '$boost=3,site=docs.rs' --goggles '$discard,site=w3schools.com'
+check "web: repeatable goggles" '.web.results | length >= 1'
+
+# Inline \n unescaping: two rules in one value
+run $BX web "rust axum" --count 3 --goggles '$boost=3,site=docs.rs\n$discard,site=w3schools.com'
+check "web: goggles inline newline" '.web.results | length >= 1'
+
+# File-based goggles via @file
+echo '$boost=3,site=docs.rs' > "$tmp/test.goggle"
+run $BX web "rust axum" --count 3 --goggles "@$tmp/test.goggle"
+check "web: goggles @file" '.web.results | length >= 1'
 
 run $BX web "rust axum" --count 3 --include-site docs.rs
 check "web: include-site" '.web.results | length >= 1'
@@ -250,6 +276,19 @@ else pass "errors: include-site + exclude-site conflict"; fi
 out=$($BX web "test" --include-site 'bad domain!' 2>"$tmp/err") && rc=0 || rc=$?
 if [ $rc -ne 2 ]; then fail "errors: invalid domain" "expected exit 2, got $rc"
 else pass "errors: invalid domain"; fi
+
+# ── Validation passthrough ───────────────────────────────────────────
+
+# count=21 was previously rejected client-side (max was 20 for web);
+# now the CLI passes it through and the API decides.
+run $BX web "test" --count 21
+check "validation: count beyond old limit" '.web.results | length >= 1'
+
+# count=0 should be rejected by the API (not the CLI)
+out=$($BX web "test" --count 0 2>"$tmp/err") && rc=0 || rc=$?
+err=$(cat "$tmp/err")
+if [ $rc -ne 1 ]; then fail "validation: count=0 API rejection" "expected exit 1, got $rc"
+else pass "validation: count=0 API rejection"; fi
 
 # ── Summary ───────────────────────────────────────────────────────────
 

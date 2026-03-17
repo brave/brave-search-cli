@@ -1,6 +1,6 @@
 [package]
 name = "brave-search-cli"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A token-efficient CLI for the Brave Search API, built for AI agents and LLMs"

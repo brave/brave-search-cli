@@ -1,6 +1,8 @@
 mod api;
 mod config;
 
+use std::borrow::Cow;
+
 use clap::{Args, Parser, Subcommand};
 
 /// Search the Web via Brave's independent index. The only search API with its own Web index at
@@ -17,6 +19,9 @@ use clap::{Args, Parser, Subcommand};
 ///   Other: news, images, videos, places, suggest, spellcheck
 ///   Restrict to / exclude specific domains? → --include-site / --exclude-site on context/web/news
 ///   Custom ranking (boost docs, discard spam)? → --goggles on context/web/news
+///
+/// Shorthand: bx "query" = bx context "query"
+/// To search for a subcommand name: bx -- web  or  bx context "web"
 ///
 /// Quick start:
 ///   bx config set-key <YOUR_KEY>
@@ -72,7 +77,7 @@ enum Command {
     /// Examples:
     ///   bx context "Python TypeError cannot unpack non-iterable NoneType" --max-tokens 4096
     ///   bx context "tokio vs async-std Rust async runtime" --count 5 --threshold strict
-    ///   bx "how to implement retry with exponential backoff" --max-tokens 2048
+    ///   bx context "how to implement retry with exponential backoff" --max-tokens 2048
     ///   bx context "axum middleware" --include-site docs.rs --include-site github.com --max-tokens 4096
     ///   bx context "axum middleware" --goggles '$boost=3,site=docs.rs' --max-tokens 4096
     #[command(verbatim_doc_comment)]
@@ -242,17 +247,18 @@ pub enum ConfigCmd {
 #[derive(Args)]
 struct GogglesArgs {
     /// Goggles: custom re-ranking rules — boost, downrank, or discard results.
-    /// Target by domain ($site=) or URL path pattern (/docs/$boost=3).
-    /// Actions: $boost=N (1-10), $downrank=N (1-10), $discard. Combine with commas.
-    /// Inline:  --goggles '$boost=3,site=docs.python.org'
-    /// File:    --goggles @rules.goggle  (reads local file, ideal for agents)
-    /// Stdin:   --goggles @-  (reads from stdin)
-    /// Hosted:  --goggles 'https://raw.githubusercontent.com/.../my.goggle'
+    /// Target by domain (site=) or URL path pattern (/docs/$boost=3).
+    /// Actions: $boost=N (1-10), $downrank=N (1-10), $discard. One rule per line.
+    /// Repeatable: --goggles '$site=docs.rs' --goggles '$discard' (joined with newlines)
+    /// Inline:    --goggles '$boost=3,site=docs.python.org'  (use \n for multiple rules)
+    /// File:      --goggles @rules.goggle  (reads local file, ideal for agents)
+    /// Stdin:     --goggles @-  (reads from stdin)
+    /// Hosted:    --goggles 'https://raw.githubusercontent.com/.../my.goggle'
     /// Unique to Brave — no other search API offers custom re-ranking.
     /// Mutually exclusive with --include-site / --exclude-site.
     /// Ref: https://github.com/brave/goggles-quickstart
     #[arg(long, verbatim_doc_comment)]
-    goggles: Option<String>,
+    goggles: Vec<String>,
 
     /// Only include results from these domains (repeatable, exclusive with --goggles / --exclude-site)
     #[arg(long, conflicts_with_all = ["goggles", "exclude_site"],
@@ -283,12 +289,12 @@ struct WebArgs {
     #[arg(long, default_value = "en-US")]
     ui_lang: String,
 
-    /// Number of results (1-20)
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=20))]
+    /// Number of results
+    #[arg(long, default_value_t = 20)]
     count: u16,
 
-    /// Result offset (0-9)
-    #[arg(long, value_parser = clap::value_parser!(u16).range(0..=9))]
+    /// Result offset for pagination
+    #[arg(long)]
     offset: Option<u16>,
 
     /// Safe search: off, moderate, strict
@@ -299,11 +305,11 @@ struct WebArgs {
     #[arg(long)]
     freshness: Option<String>,
 
-    /// Enable text decorations (bold markers in snippets)
+    /// Text decorations (bold markers in snippets) [omit: API default, --text-decorations: enable, --text-decorations false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     text_decorations: Option<String>,
 
-    /// Enable spellcheck
+    /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     spellcheck: Option<String>,
 
@@ -314,7 +320,7 @@ struct WebArgs {
     #[command(flatten)]
     goggles_args: GogglesArgs,
 
-    /// Return extra snippets from different parts of the page
+    /// Extra snippets from different parts of the page [omit: API default, --extra-snippets: enable, --extra-snippets false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     extra_snippets: Option<String>,
 
@@ -322,7 +328,9 @@ struct WebArgs {
     #[arg(long, value_parser = ["metric", "imperial"])]
     units: Option<String>,
 
-    /// Enable search operators
+    /// Enable search operators in the query (site:, intitle:, etc.)
+    /// Full list: https://search.brave.com/help/operators
+    /// [omit: API default, --operators: enable, --operators false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     operators: Option<String>,
 
@@ -373,15 +381,15 @@ struct ImagesArgs {
     #[arg(long, default_value = "en")]
     search_lang: String,
 
-    /// Number of results (1-200)
-    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
+    /// Number of results
+    #[arg(long, default_value_t = 50)]
     count: u16,
 
     /// Safe search: off or strict
     #[arg(long, default_value = "strict", value_parser = ["off", "strict"])]
     safesearch: String,
 
-    /// Enable spellcheck
+    /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     spellcheck: Option<String>,
 }
@@ -404,12 +412,12 @@ struct VideosArgs {
     #[arg(long, default_value = "en-US")]
     ui_lang: String,
 
-    /// Number of results (1-50)
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=50))]
+    /// Number of results
+    #[arg(long, default_value_t = 20)]
     count: u16,
 
-    /// Result offset (0-9)
-    #[arg(long, value_parser = clap::value_parser!(u16).range(0..=9))]
+    /// Result offset for pagination
+    #[arg(long)]
     offset: Option<u16>,
 
     /// Safe search: off, moderate, strict
@@ -420,11 +428,13 @@ struct VideosArgs {
     #[arg(long)]
     freshness: Option<String>,
 
-    /// Enable spellcheck
+    /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     spellcheck: Option<String>,
 
-    /// Enable search operators
+    /// Enable search operators in the query (site:, intitle:, etc.)
+    /// Full list: https://search.brave.com/help/operators
+    /// [omit: API default, --operators: enable, --operators false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     operators: Option<String>,
 }
@@ -447,12 +457,12 @@ struct NewsArgs {
     #[arg(long, default_value = "en-US")]
     ui_lang: String,
 
-    /// Number of results (1-50)
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=50))]
+    /// Number of results
+    #[arg(long, default_value_t = 20)]
     count: u16,
 
-    /// Result offset (0-9)
-    #[arg(long, value_parser = clap::value_parser!(u16).range(0..=9))]
+    /// Result offset for pagination
+    #[arg(long)]
     offset: Option<u16>,
 
     /// Safe search: off, moderate, strict
@@ -463,18 +473,20 @@ struct NewsArgs {
     #[arg(long)]
     freshness: Option<String>,
 
-    /// Enable spellcheck
+    /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     spellcheck: Option<String>,
 
-    /// Return extra snippets
+    /// Extra snippets [omit: API default, --extra-snippets: enable, --extra-snippets false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     extra_snippets: Option<String>,
 
     #[command(flatten)]
     goggles_args: GogglesArgs,
 
-    /// Enable search operators
+    /// Enable search operators in the query (site:, intitle:, etc.)
+    /// Full list: https://search.brave.com/help/operators
+    /// [omit: API default, --operators: enable, --operators false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     operators: Option<String>,
 }
@@ -493,11 +505,11 @@ struct SuggestArgs {
     #[arg(long, default_value = "US")]
     country: String,
 
-    /// Number of suggestions (1-20)
-    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u16).range(1..=20))]
+    /// Number of suggestions
+    #[arg(long, default_value_t = 5)]
     count: u16,
 
-    /// Enable rich suggestions
+    /// Rich suggestions [omit: API default, --rich: enable, --rich false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     rich: Option<String>,
 }
@@ -563,23 +575,23 @@ struct AnswersArgs {
     #[arg(long)]
     research_allow_thinking: Option<bool>,
 
-    /// Max tokens per research query (1024-16384)
+    /// Max tokens per research query
     #[arg(long)]
     research_max_tokens_per_query: Option<u32>,
 
-    /// Max research queries (1-50)
+    /// Max research queries
     #[arg(long)]
     research_max_queries: Option<u32>,
 
-    /// Max research iterations (1-5)
+    /// Max research iterations
     #[arg(long)]
     research_max_iterations: Option<u32>,
 
-    /// Max research seconds (1-300)
+    /// Max research seconds
     #[arg(long)]
     research_max_seconds: Option<u32>,
 
-    /// Max results per research query (1-60)
+    /// Max results per research query
     #[arg(long)]
     research_max_results_per_query: Option<u32>,
 
@@ -618,27 +630,27 @@ struct ContextArgs {
     #[arg(long, default_value = "en")]
     search_lang: String,
 
-    /// Number of results (1-50)
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=50))]
+    /// Number of results
+    #[arg(long, default_value_t = 20)]
     count: u16,
 
-    /// Max URLs to include (1-50)
+    /// Max URLs to include
     #[arg(long, visible_alias = "max-urls")]
     maximum_number_of_urls: Option<String>,
 
-    /// Max total tokens (1024-32768)
+    /// Max total tokens
     #[arg(long, visible_alias = "max-tokens")]
     maximum_number_of_tokens: Option<String>,
 
-    /// Max snippets (1-100)
+    /// Max snippets
     #[arg(long, visible_alias = "max-snippets")]
     maximum_number_of_snippets: Option<String>,
 
-    /// Max tokens per URL (512-8192)
+    /// Max tokens per URL
     #[arg(long, visible_alias = "max-tokens-per-url")]
     maximum_number_of_tokens_per_url: Option<String>,
 
-    /// Max snippets per URL (1-100)
+    /// Max snippets per URL
     #[arg(long, visible_alias = "max-snippets-per-url")]
     maximum_number_of_snippets_per_url: Option<String>,
 
@@ -649,7 +661,7 @@ struct ContextArgs {
     #[command(flatten)]
     goggles_args: GogglesArgs,
 
-    /// Enable local results
+    /// Local results [omit: API default, --enable-local: enable, --enable-local false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     enable_local: Option<String>,
 
@@ -692,11 +704,11 @@ struct PlacesArgs {
     #[arg(long, short)]
     q: Option<String>,
 
-    /// Latitude (-90 to 90)
+    /// Latitude
     #[arg(long, allow_hyphen_values = true)]
     latitude: Option<String>,
 
-    /// Longitude (-180 to 180)
+    /// Longitude
     #[arg(long, requires = "latitude", allow_hyphen_values = true)]
     longitude: Option<String>,
 
@@ -704,12 +716,12 @@ struct PlacesArgs {
     #[arg(long)]
     location: Option<String>,
 
-    /// Search radius in meters (0-20000)
+    /// Search radius in meters
     #[arg(long)]
     radius: Option<String>,
 
-    /// Number of results (1-50)
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=50))]
+    /// Number of results
+    #[arg(long, default_value_t = 20)]
     count: u16,
 
     /// Country code
@@ -732,14 +744,14 @@ struct PlacesArgs {
     #[arg(long, default_value = "strict", value_parser = ["off", "moderate", "strict"])]
     safesearch: String,
 
-    /// Enable spellcheck
+    /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     spellcheck: Option<String>,
 }
 
 #[derive(Parser)]
 struct PoisArgs {
-    /// POI IDs (1-20)
+    /// POI IDs
     ids: Vec<String>,
 
     /// Search language
@@ -765,7 +777,7 @@ struct PoisArgs {
 
 #[derive(Parser)]
 struct DescriptionsArgs {
-    /// POI IDs (1-20)
+    /// POI IDs
     ids: Vec<String>,
 }
 
@@ -789,25 +801,30 @@ const SUBCOMMANDS: &[&str] = &[
 
 /// Injects "context" as the default subcommand when the first positional
 /// argument is not a known subcommand (e.g. `bx "query"` → `bx context "query"`).
+/// Use `--` to force context for queries matching subcommand names: `bx -- web`.
 fn inject_default_subcommand() -> Vec<String> {
     // Safety: args[0] is not used for security decisions — we skip it (i = 1) and only
     // inspect subsequent args for subcommand routing. CWE-807 does not apply here.
     let args: Vec<String> = std::env::args().collect(); // nosemgrep: rust.lang.security.args.args
+    inject_default_subcommand_impl(args)
+}
 
+fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
     // Flags that consume the next argument as a value
     const VALUE_FLAGS: &[&str] = &["--api-key", "--base-url", "--timeout"];
 
     let mut i = 1; // skip binary name
     while i < args.len() {
-        let arg = &args[i];
-
-        if arg == "--" {
-            break;
+        if args[i] == "--" {
+            // No subcommand before -- ; inject "context" so clap sees it as
+            // `bx context -- <query>`, allowing disambiguation of subcommand names.
+            args.insert(i, "context".to_string());
+            return args;
         }
 
-        if arg.starts_with('-') {
+        if args[i].starts_with('-') {
             // Check if this flag consumes the next arg
-            if VALUE_FLAGS.contains(&arg.as_str()) {
+            if VALUE_FLAGS.contains(&args[i].as_str()) {
                 i += 2; // skip flag and its value
                 continue;
             }
@@ -817,10 +834,9 @@ fn inject_default_subcommand() -> Vec<String> {
         }
 
         // First positional argument found
-        if !SUBCOMMANDS.contains(&arg.as_str()) {
-            let mut new_args = args.clone();
-            new_args.insert(i, "context".to_string());
-            return new_args;
+        if !SUBCOMMANDS.contains(&args[i].as_str()) {
+            args.insert(i, "context".to_string());
+            return args;
         }
 
         return args; // known subcommand, no injection
@@ -1006,10 +1022,12 @@ fn build_site_goggles(include: &[String], exclude: &[String]) -> Option<String> 
 impl GogglesArgs {
     /// Resolves goggles from --goggles, --include-site, or --exclude-site.
     fn resolve(&self) -> Option<String> {
-        self.goggles
-            .as_deref()
-            .map(resolve_goggles)
-            .or_else(|| build_site_goggles(&self.include_site, &self.exclude_site))
+        if !self.goggles.is_empty() {
+            let parts: Vec<Cow<str>> = self.goggles.iter().map(|v| resolve_goggles(v)).collect();
+            Some(parts.join("\n"))
+        } else {
+            build_site_goggles(&self.include_site, &self.exclude_site)
+        }
     }
 }
 
@@ -1019,8 +1037,9 @@ const MAX_INPUT_SIZE: u64 = 1024 * 1024; // 1 MB
 /// Resolves a --goggles value:
 ///   @-       → read from stdin
 ///   @path    → read from file
-///   other    → return as-is (inline rules or hosted URL)
-fn resolve_goggles(value: &str) -> String {
+///   http(s)  → pass through (hosted goggle URL)
+///   other    → inline rules (\n unescaped to newlines)
+fn resolve_goggles(value: &str) -> Cow<'_, str> {
     if let Some(path) = value.strip_prefix('@') {
         if path == "-" {
             let mut buf = String::new();
@@ -1033,7 +1052,7 @@ fn resolve_goggles(value: &str) -> String {
                 eprintln!("error: goggles input exceeds maximum size ({MAX_INPUT_SIZE} bytes)");
                 std::process::exit(1);
             }
-            buf
+            Cow::Owned(buf)
         } else {
             match std::fs::metadata(path) {
                 Ok(meta) if meta.len() > MAX_INPUT_SIZE => {
@@ -1049,16 +1068,42 @@ fn resolve_goggles(value: &str) -> String {
                 _ => {}
             }
             match std::fs::read_to_string(path) {
-                Ok(contents) => contents,
+                Ok(contents) => Cow::Owned(contents),
                 Err(e) => {
                     eprintln!("error: failed to read goggles file '{path}': {e}");
                     std::process::exit(1);
                 }
             }
         }
+    } else if value.starts_with("http://") || value.starts_with("https://") {
+        Cow::Borrowed(value)
     } else {
-        value.to_string()
+        unescape_inline_newlines(value)
     }
+}
+
+/// Unescapes `\n` → newline and `\\` → backslash in inline goggles.
+/// Not applied to @file/@- reads (those already contain real newlines) or hosted URLs.
+fn unescape_inline_newlines(s: &str) -> Cow<'_, str> {
+    if !s.contains('\\') {
+        return Cow::Borrowed(s);
+    }
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(&'n')) => {
+                chars.next();
+                result.push('\n');
+            }
+            ('\\', Some(&'\\')) => {
+                chars.next();
+                result.push('\\');
+            }
+            _ => result.push(c),
+        }
+    }
+    Cow::Owned(result)
 }
 
 // ── Command handlers ─────────────────────────────────────────────────
@@ -1537,5 +1582,197 @@ mod tests {
         assert!(validate_domain("$inject").is_err());
         assert!(validate_domain("a,b=c").is_err());
         assert!(validate_domain("a\nb").is_err());
+    }
+
+    // ── inject_default_subcommand_impl tests ────────────────────────
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn inject_normal_query() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx rust-error")),
+            args("bx context rust-error")
+        );
+    }
+
+    #[test]
+    fn inject_known_subcommand_no_change() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx web query")),
+            args("bx web query")
+        );
+    }
+
+    #[test]
+    fn inject_double_dash_inserts_context() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx -- web")),
+            args("bx context -- web")
+        );
+    }
+
+    #[test]
+    fn inject_double_dash_with_normal_query() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx -- some-query")),
+            args("bx context -- some-query")
+        );
+    }
+
+    #[test]
+    fn inject_skips_global_value_flags() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --api-key KEY query")),
+            args("bx --api-key KEY context query")
+        );
+    }
+
+    #[test]
+    fn inject_help_no_change() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --help")),
+            args("bx --help")
+        );
+    }
+
+    #[test]
+    fn inject_double_dash_alone() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --")),
+            args("bx context --")
+        );
+    }
+
+    #[test]
+    fn inject_no_args() {
+        assert_eq!(inject_default_subcommand_impl(args("bx")), args("bx"));
+    }
+
+    #[test]
+    fn inject_subcommand_alone() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx web")),
+            args("bx web")
+        );
+    }
+
+    #[test]
+    fn inject_skips_multiple_value_flags() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --api-key KEY --timeout 30 query")),
+            args("bx --api-key KEY --timeout 30 context query")
+        );
+    }
+
+    #[test]
+    fn inject_value_flag_then_double_dash() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --timeout 30 -- web")),
+            args("bx --timeout 30 context -- web")
+        );
+    }
+
+    #[test]
+    fn inject_value_flag_at_end() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --timeout")),
+            args("bx --timeout")
+        );
+    }
+
+    #[test]
+    fn inject_unknown_flag_before_query() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --verbose query")),
+            args("bx --verbose context query")
+        );
+    }
+
+    #[test]
+    fn inject_equals_form_flag() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --api-key=KEY query")),
+            args("bx --api-key=KEY context query")
+        );
+    }
+
+    // ── unescape_inline_newlines tests ──────────────────────────────
+
+    #[test]
+    fn unescape_newline() {
+        assert_eq!(unescape_inline_newlines("a\\nb"), "a\nb");
+    }
+
+    #[test]
+    fn unescape_double_backslash() {
+        assert_eq!(unescape_inline_newlines("a\\\\nb"), "a\\nb");
+    }
+
+    #[test]
+    fn unescape_noop() {
+        assert_eq!(unescape_inline_newlines("plain text"), "plain text");
+    }
+
+    #[test]
+    fn unescape_trailing_backslash() {
+        assert_eq!(unescape_inline_newlines("end\\"), "end\\");
+    }
+
+    #[test]
+    fn unescape_other_escape() {
+        assert_eq!(unescape_inline_newlines("a\\tb"), "a\\tb");
+    }
+
+    #[test]
+    fn unescape_empty() {
+        assert_eq!(unescape_inline_newlines(""), "");
+    }
+
+    #[test]
+    fn unescape_only_newline() {
+        assert_eq!(unescape_inline_newlines("\\n"), "\n");
+    }
+
+    #[test]
+    fn unescape_newline_at_start() {
+        assert_eq!(unescape_inline_newlines("\\ntext"), "\ntext");
+    }
+
+    #[test]
+    fn unescape_newline_at_end() {
+        assert_eq!(unescape_inline_newlines("text\\n"), "text\n");
+    }
+
+    #[test]
+    fn unescape_consecutive_newlines() {
+        assert_eq!(unescape_inline_newlines("a\\n\\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn unescape_mixed() {
+        assert_eq!(unescape_inline_newlines("a\\nb\\\\c\\nd"), "a\nb\\c\nd");
+    }
+
+    #[test]
+    fn unescape_only_backslash() {
+        assert_eq!(unescape_inline_newlines("\\"), "\\");
+    }
+
+    #[test]
+    fn unescape_triple_backslash() {
+        assert_eq!(unescape_inline_newlines("\\\\\\"), "\\\\");
+    }
+
+    #[test]
+    fn unescape_triple_backslash_n() {
+        assert_eq!(unescape_inline_newlines("\\\\\\n"), "\\\n");
+    }
+
+    #[test]
+    fn unescape_quadruple_backslash() {
+        assert_eq!(unescape_inline_newlines("\\\\\\\\"), "\\\\");
     }
 }
