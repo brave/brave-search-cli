@@ -2,7 +2,7 @@ ARG TARGET=x86_64-pc-windows-gnu
 
 # Pin by digest to prevent supply-chain tag-swap attacks.
 # Renovate will auto-update this digest when new versions are published.
-FROM rust:1-slim@sha256:d6782f2b326a10eaf593eb90cafc34a03a287b4a25fe4d0c693c90304b06f6d7 AS builder
+FROM rust:1-slim@sha256:f7bf1c266d9e48c8d724733fd97ba60464c44b743eb4f46f935577d3242d81d0 AS builder
 ARG TARGET
 
 RUN apt-get update && apt-get install -y gcc-mingw-w64-x86-64 && rm -rf /var/lib/apt/lists/*
