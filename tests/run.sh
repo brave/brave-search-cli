@@ -58,6 +58,9 @@ else echo "error: bx binary not found. Set \$BX or run: cargo build --release" >
 fi
 
 # Resolve API key
+if [ -z "${BRAVE_SEARCH_API_KEY:-}" ] && [ -n "${BRAVE_API_KEY:-}" ]; then
+  BRAVE_SEARCH_API_KEY="$BRAVE_API_KEY"
+fi
 if [ -z "${BRAVE_SEARCH_API_KEY:-}" ]; then
   for f in "${HOME}/.config/brave-search/api_key" \
            "${HOME}/Library/Application Support/brave-search/api_key" \

@@ -893,18 +893,36 @@ fn validate_base_url(url: &str) {
     }
 }
 
+fn non_empty_env(var: &str) -> Option<String> {
+    std::env::var(var)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn resolve_api_key(cli: &Cli) -> String {
     // 1. --api-key flag / BRAVE_SEARCH_API_KEY env (handled by clap)
-    if let Some(ref key) = cli.api_key {
-        return key.clone();
+    if let Some(key) = cli
+        .api_key
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+    {
+        return key;
     }
 
-    // 2. Config file
+    // 2. BRAVE_API_KEY fallback (alternate env name used by some tooling)
+    if let Some(key) = non_empty_env("BRAVE_API_KEY") {
+        return key;
+    }
+
+    // 3. Config file
     if let Some(key) = config::load_api_key() {
         return key;
     }
 
-    // 3. Interactive onboarding
+    // 4. Interactive onboarding
     match config::onboard() {
         Ok(key) => key,
         Err(msg) => {

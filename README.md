@@ -391,6 +391,6 @@ make dist-all        # → all of the above
 # Unit tests (no network/API key required)
 make test
 
-# End-to-end API smoke suite (requires bash + jq + BRAVE_SEARCH_API_KEY)
+# End-to-end API smoke suite (requires bash + jq + BRAVE_SEARCH_API_KEY/BRAVE_API_KEY)
 make test-unit
 ```
