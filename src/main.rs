@@ -904,12 +904,11 @@ fn resolve_api_key(cli: &Cli) -> String {
     // 1. --api-key flag / BRAVE_SEARCH_API_KEY env (handled by clap)
     if let Some(key) = cli
         .api_key
-        .as_ref()
-        .map(|s| s.trim())
+        .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
     {
-        return key;
+        return key.to_string();
     }
 
     // 2. BRAVE_API_KEY fallback (alternate env name used by some tooling)

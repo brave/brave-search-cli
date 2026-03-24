@@ -388,9 +388,9 @@ make dist-all        # → all of the above
 ## Testing
 
 ```bash
-# Unit tests (no network/API key required)
+# End-to-end API smoke suite (requires bash + jq + BRAVE_SEARCH_API_KEY/BRAVE_API_KEY)
 make test
 
-# End-to-end API smoke suite (requires bash + jq + BRAVE_SEARCH_API_KEY/BRAVE_API_KEY)
+# Unit tests (no network/API key required)
 make test-unit
 ```
