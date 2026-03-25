@@ -58,6 +58,65 @@ pub fn build_query(params: &[(&str, Option<&str>)]) -> String {
     }
 }
 
+/// Infers a JSON type from a string value: i64 → Number, "true"/"false" → Bool, else String.
+fn auto_detect_json_type(v: &str) -> serde_json::Value {
+    if let Ok(n) = v.parse::<i64>() {
+        n.into()
+    } else if v == "true" {
+        true.into()
+    } else if v == "false" {
+        false.into()
+    } else {
+        v.into()
+    }
+}
+
+/// Builds a JSON object from key-value pairs, skipping None values.
+/// Values are auto-typed: integers, booleans ("true"/"false"), or strings.
+pub fn build_json_body(params: &[(&str, Option<&str>)]) -> serde_json::Value {
+    let mut map = serde_json::Map::with_capacity(params.len());
+    for &(key, val) in params {
+        if let Some(v) = val {
+            map.insert(key.into(), auto_detect_json_type(v));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Merges extra KEY=VALUE pairs into a JSON body. Warns on collision.
+pub fn merge_extra_into_json(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
+    if extras.is_empty() {
+        return;
+    }
+    let Some(obj) = body.as_object_mut() else {
+        eprintln!("error: --extra requires a JSON object body");
+        std::process::exit(1);
+    };
+    for &(key, val) in extras {
+        if obj.contains_key(key) {
+            eprintln!("warning: --extra '{key}={val}' overrides existing parameter");
+        }
+        obj.insert(key.into(), auto_detect_json_type(val));
+    }
+}
+
+/// Appends extra KEY=VALUE pairs to a query string. Warns on collision with existing params.
+pub fn append_extra_to_query(
+    qs: &mut String,
+    params: &[(&str, Option<&str>)],
+    extras: &[(&str, &str)],
+) {
+    for &(key, val) in extras {
+        if params.iter().any(|&(k, v)| k == key && v.is_some()) {
+            eprintln!("warning: --extra '{key}={val}' overrides existing parameter");
+        }
+        qs.push(if qs.is_empty() { '?' } else { '&' });
+        qs.push_str(&urlencoding::encode(key));
+        qs.push('=');
+        qs.push_str(&urlencoding::encode(val));
+    }
+}
+
 /// Builds a query string that supports repeated keys (e.g. ids=a&ids=b).
 pub fn build_query_repeated(
     params: &[(&str, Option<&str>)],
@@ -260,13 +319,17 @@ pub fn post_json(
     path: &str,
     api_key: &str,
     body: &serde_json::Value,
+    headers: &[(&str, &str)],
     timeout: u64,
 ) {
     let url = format!("{base_url}{path}");
-    let req = agent(timeout)
+    let mut req = agent(timeout)
         .post(&url)
         .header("X-Subscription-Token", api_key)
         .header("Content-Type", "application/json");
+    for &(k, v) in headers {
+        req = req.header(k, v);
+    }
 
     let payload = serde_json::to_string(body).expect("failed to serialize JSON body");
 
@@ -286,13 +349,17 @@ pub fn post_json_stream(
     path: &str,
     api_key: &str,
     body: &serde_json::Value,
+    headers: &[(&str, &str)],
     timeout: u64,
 ) {
     let url = format!("{base_url}{path}");
-    let req = streaming_agent(timeout)
+    let mut req = streaming_agent(timeout)
         .post(&url)
         .header("X-Subscription-Token", api_key)
         .header("Content-Type", "application/json");
+    for &(k, v) in headers {
+        req = req.header(k, v);
+    }
 
     let payload = serde_json::to_string(body).expect("failed to serialize JSON body");
 
@@ -348,6 +415,337 @@ pub fn post_json_stream(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    // ── auto_detect_json_type ────────────────────────────────────────
+
+    #[test]
+    fn auto_detect_integers() {
+        assert_eq!(auto_detect_json_type("20"), serde_json::json!(20));
+        assert_eq!(auto_detect_json_type("-5"), serde_json::json!(-5));
+        assert_eq!(auto_detect_json_type("0"), serde_json::json!(0));
+        assert_eq!(auto_detect_json_type("00020"), serde_json::json!(20)); // leading zeros
+    }
+
+    #[test]
+    fn auto_detect_booleans() {
+        assert_eq!(auto_detect_json_type("true"), serde_json::json!(true));
+        assert_eq!(auto_detect_json_type("false"), serde_json::json!(false));
+    }
+
+    #[test]
+    fn auto_detect_strings() {
+        assert_eq!(auto_detect_json_type("US"), serde_json::json!("US"));
+        assert_eq!(auto_detect_json_type("en-US"), serde_json::json!("en-US"));
+        assert_eq!(
+            auto_detect_json_type("moderate"),
+            serde_json::json!("moderate")
+        );
+        assert_eq!(auto_detect_json_type("pd"), serde_json::json!("pd"));
+        assert_eq!(auto_detect_json_type(""), serde_json::json!(""));
+    }
+
+    #[test]
+    fn auto_detect_not_float() {
+        // No float detection — avoids false positives on version-like strings
+        assert_eq!(auto_detect_json_type("1.5"), serde_json::json!("1.5"));
+        assert_eq!(auto_detect_json_type("1.2.3"), serde_json::json!("1.2.3"));
+    }
+
+    #[test]
+    fn auto_detect_case_sensitive_bool() {
+        assert_eq!(auto_detect_json_type("TRUE"), serde_json::json!("TRUE"));
+        assert_eq!(auto_detect_json_type("True"), serde_json::json!("True"));
+        assert_eq!(auto_detect_json_type("FALSE"), serde_json::json!("FALSE"));
+    }
+
+    #[test]
+    fn auto_detect_i64_overflow() {
+        assert_eq!(
+            auto_detect_json_type("99999999999999999999"),
+            serde_json::json!("99999999999999999999")
+        );
+    }
+
+    #[test]
+    fn auto_detect_not_number_strings() {
+        assert_eq!(auto_detect_json_type("20x"), serde_json::json!("20x"));
+        assert_eq!(auto_detect_json_type("abc"), serde_json::json!("abc"));
+    }
+
+    #[test]
+    fn auto_detect_whitespace_not_trimmed() {
+        assert_eq!(auto_detect_json_type(" 42 "), serde_json::json!(" 42 "));
+        assert_eq!(auto_detect_json_type(" true "), serde_json::json!(" true "));
+    }
+
+    #[test]
+    fn auto_detect_i64_boundaries() {
+        assert_eq!(
+            auto_detect_json_type("9223372036854775807"), // i64::MAX
+            serde_json::json!(9223372036854775807_i64)
+        );
+        assert_eq!(
+            auto_detect_json_type("9223372036854775808"), // i64::MAX + 1
+            serde_json::json!("9223372036854775808")
+        );
+        assert_eq!(
+            auto_detect_json_type("-9223372036854775808"), // i64::MIN
+            serde_json::json!(-9223372036854775808_i64)
+        );
+    }
+
+    #[test]
+    fn auto_detect_null_is_string() {
+        assert_eq!(auto_detect_json_type("null"), serde_json::json!("null"));
+    }
+
+    // ── build_json_body ──────────────────────────────────────────────
+
+    #[test]
+    fn build_json_body_mixed_types() {
+        let body = build_json_body(&[
+            ("q", Some("test query")),
+            ("count", Some("20")),
+            ("spellcheck", Some("true")),
+            ("freshness", None),
+        ]);
+        assert_eq!(body["q"], "test query");
+        assert_eq!(body["count"], 20);
+        assert_eq!(body["spellcheck"], true);
+        assert!(body.get("freshness").is_none());
+    }
+
+    #[test]
+    fn build_json_body_empty() {
+        let body = build_json_body(&[]);
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[test]
+    fn build_json_body_all_none() {
+        let body = build_json_body(&[("a", None), ("b", None)]);
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[test]
+    fn build_json_body_single() {
+        let body = build_json_body(&[("q", Some("hello"))]);
+        assert_eq!(body, serde_json::json!({"q": "hello"}));
+    }
+
+    #[test]
+    fn build_json_body_json_special_chars() {
+        let body = build_json_body(&[("q", Some("hello \"world\"\nnewline"))]);
+        // serde_json handles escaping — just verify it round-trips
+        let s = serde_json::to_string(&body).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["q"], "hello \"world\"\nnewline");
+    }
+
+    // ── merge_extra_into_json ────────────────────────────────────────
+
+    #[test]
+    fn merge_extra_adds_new_keys() {
+        let mut body = serde_json::json!({"q": "test"});
+        merge_extra_into_json(&mut body, &[("count", "5"), ("custom", "val")]);
+        assert_eq!(body["count"], 5);
+        assert_eq!(body["custom"], "val");
+        assert_eq!(body["q"], "test"); // unchanged
+    }
+
+    #[test]
+    fn merge_extra_overrides_existing() {
+        let mut body = serde_json::json!({"count": 20});
+        merge_extra_into_json(&mut body, &[("count", "5")]);
+        assert_eq!(body["count"], 5);
+    }
+
+    #[test]
+    fn merge_extra_empty_noop() {
+        let mut body = serde_json::json!({"q": "test"});
+        let original = body.clone();
+        merge_extra_into_json(&mut body, &[]);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn merge_extra_empty_on_non_object() {
+        // Empty extras returns early before the object check, so non-object
+        // bodies are fine. Non-empty extras on a non-object body exits with
+        // an error (stdin mode in cmd_answers can receive arbitrary JSON).
+        let mut body = serde_json::json!([1, 2, 3]);
+        merge_extra_into_json(&mut body, &[]);
+        assert_eq!(body, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn merge_extra_auto_detects_types() {
+        let mut body = serde_json::json!({});
+        merge_extra_into_json(&mut body, &[("n", "42"), ("b", "true"), ("s", "hello")]);
+        assert_eq!(body["n"], 42);
+        assert_eq!(body["b"], true);
+        assert_eq!(body["s"], "hello");
+    }
+
+    #[test]
+    fn merge_extra_duplicate_last_wins() {
+        let mut body = serde_json::json!({"q": "test"});
+        merge_extra_into_json(&mut body, &[("k", "1"), ("k", "2")]);
+        assert_eq!(body["k"], 2);
+    }
+
+    // ── append_extra_to_query ────────────────────────────────────────
+
+    #[test]
+    fn append_extra_to_empty_qs() {
+        let params: &[(&str, Option<&str>)] = &[];
+        let mut qs = String::new();
+        append_extra_to_query(&mut qs, params, &[("key", "val")]);
+        assert_eq!(qs, "?key=val");
+    }
+
+    #[test]
+    fn append_extra_to_existing_qs() {
+        let params: &[(&str, Option<&str>)] = &[("q", Some("test"))];
+        let mut qs = "?q=test".to_string();
+        append_extra_to_query(&mut qs, params, &[("extra", "val")]);
+        assert_eq!(qs, "?q=test&extra=val");
+    }
+
+    #[test]
+    fn append_extra_url_encodes() {
+        let params: &[(&str, Option<&str>)] = &[];
+        let mut qs = String::new();
+        append_extra_to_query(&mut qs, params, &[("q", "hello world"), ("x", "a&b=c")]);
+        assert_eq!(qs, "?q=hello%20world&x=a%26b%3Dc");
+    }
+
+    #[test]
+    fn append_extra_encodes_key() {
+        let params: &[(&str, Option<&str>)] = &[];
+        let mut qs = String::new();
+        append_extra_to_query(&mut qs, params, &[("a&b", "val"), ("x=y", "z")]);
+        assert_eq!(qs, "?a%26b=val&x%3Dy=z");
+    }
+
+    #[test]
+    fn append_extra_multiple() {
+        let params: &[(&str, Option<&str>)] = &[];
+        let mut qs = String::new();
+        append_extra_to_query(&mut qs, params, &[("a", "1"), ("b", "2")]);
+        assert_eq!(qs, "?a=1&b=2");
+    }
+
+    #[test]
+    fn append_extra_collision_produces_duplicate() {
+        let params: &[(&str, Option<&str>)] = &[("count", Some("20"))];
+        let mut qs = "?count=20".to_string();
+        append_extra_to_query(&mut qs, params, &[("count", "5")]);
+        // Appends duplicate — server decides which wins (warns on stderr)
+        assert_eq!(qs, "?count=20&count=5");
+    }
+
+    #[test]
+    fn append_extra_no_collision_when_param_is_none() {
+        let params: &[(&str, Option<&str>)] = &[("freshness", None)];
+        let mut qs = String::new();
+        // freshness is None so no collision — extra fills the gap
+        append_extra_to_query(&mut qs, params, &[("freshness", "pw")]);
+        assert_eq!(qs, "?freshness=pw");
+    }
+
+    #[test]
+    fn append_extra_empty_noop() {
+        let params: &[(&str, Option<&str>)] = &[("q", Some("test"))];
+        let mut qs = "?q=test".to_string();
+        append_extra_to_query(&mut qs, params, &[]);
+        assert_eq!(qs, "?q=test");
+    }
+
+    #[test]
+    fn append_extra_empty_value() {
+        let params: &[(&str, Option<&str>)] = &[];
+        let mut qs = String::new();
+        append_extra_to_query(&mut qs, params, &[("key", "")]);
+        assert_eq!(qs, "?key=");
+    }
+
+    // ── build_query ──────────────────────────────────────────────────
+
+    #[test]
+    fn build_query_all_none() {
+        assert_eq!(build_query(&[("a", None), ("b", None)]), "");
+    }
+
+    #[test]
+    fn build_query_single() {
+        assert_eq!(build_query(&[("q", Some("test"))]), "?q=test");
+    }
+
+    #[test]
+    fn build_query_multiple() {
+        assert_eq!(
+            build_query(&[("q", Some("test")), ("count", Some("20"))]),
+            "?q=test&count=20"
+        );
+    }
+
+    #[test]
+    fn build_query_skips_none() {
+        assert_eq!(
+            build_query(&[("q", Some("test")), ("x", None), ("c", Some("5"))]),
+            "?q=test&c=5"
+        );
+    }
+
+    #[test]
+    fn build_query_url_encodes_values() {
+        assert_eq!(
+            build_query(&[("q", Some("hello world")), ("x", Some("a&b"))]),
+            "?q=hello%20world&x=a%26b"
+        );
+    }
+
+    #[test]
+    fn build_query_unicode() {
+        assert_eq!(build_query(&[("q", Some("café"))]), "?q=caf%C3%A9");
+    }
+
+    #[test]
+    fn build_query_empty() {
+        assert_eq!(build_query(&[]), "");
+    }
+
+    // ── build_query_repeated ─────────────────────────────────────────
+
+    #[test]
+    fn build_query_repeated_basic() {
+        let ids = vec!["a".into(), "b".into()];
+        assert_eq!(
+            build_query_repeated(&[("lang", Some("en"))], &[("ids", &ids)]),
+            "?lang=en&ids=a&ids=b"
+        );
+    }
+
+    #[test]
+    fn build_query_repeated_empty_repeated() {
+        let ids: Vec<String> = vec![];
+        assert_eq!(
+            build_query_repeated(&[("lang", Some("en"))], &[("ids", &ids)]),
+            "?lang=en"
+        );
+    }
+
+    #[test]
+    fn build_query_repeated_only_repeated() {
+        let ids = vec!["x".into(), "y".into(), "z".into()];
+        assert_eq!(
+            build_query_repeated(&[], &[("ids", &ids)]),
+            "?ids=x&ids=y&ids=z"
+        );
+    }
+
+    // ── read_line_bounded ────────────────────────────────────────────
 
     #[test]
     fn read_line_bounded_normal_lines() {
