@@ -84,7 +84,7 @@ pub fn save_config(config: &Config, override_path: Option<&Path>) -> io::Result<
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
 
-    let contents = toml::to_string_pretty(config).map_err(|e| io::Error::other(e.to_string()))?;
+    let contents = toml::to_string_pretty(config).map_err(io::Error::other)?;
 
     #[cfg(unix)]
     {
@@ -106,15 +106,26 @@ pub fn save_config(config: &Config, override_path: Option<&Path>) -> io::Result<
     Ok(())
 }
 
+// ── String helpers ───────────────────────────────────────────────────
+
+/// Returns the trimmed string if non-empty, reusing the allocation when possible.
+pub(crate) fn trim_non_empty(s: String) -> Option<String> {
+    let tl = s.trim().len();
+    if tl == 0 {
+        None
+    } else if tl == s.len() {
+        Some(s)
+    } else {
+        Some(s.trim().to_string())
+    }
+}
+
 // ── API key helpers ──────────────────────────────────────────────────
 
 /// Loads the API key from the legacy bare `api_key` file, if it exists.
 pub fn load_legacy_api_key() -> Option<String> {
     let path = legacy_key_path()?;
-    fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    fs::read_to_string(path).ok().and_then(trim_non_empty)
 }
 
 /// Validates that an API key looks reasonable before saving.
@@ -156,13 +167,9 @@ fn mask_key(key: &str) -> String {
 
 /// Loads the API key from the config file, falling back to the legacy file.
 fn load_api_key_for_display(config_path: Option<&Path>) -> Option<String> {
-    let config = load_config(config_path);
-    config
+    load_config(config_path)
         .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+        .and_then(trim_non_empty)
         .or_else(load_legacy_api_key)
 }
 
@@ -611,6 +618,147 @@ mod tests {
     #[test]
     fn mask_non_ascii() {
         assert_eq!(mask_key("clé_sécurisée"), "****...");
+    }
+
+    // ── mask_key edge cases ──
+
+    #[test]
+    fn mask_empty_string() {
+        assert_eq!(mask_key(""), "...");
+    }
+
+    #[test]
+    fn mask_exactly_2_chars() {
+        assert_eq!(mask_key("ab"), "a...");
+    }
+
+    #[test]
+    fn mask_exactly_3_chars() {
+        assert_eq!(mask_key("abc"), "a...");
+    }
+
+    // ── validate_api_key boundaries (via save_api_key) ──
+
+    #[test]
+    fn save_api_key_exactly_7_chars_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        assert!(save_api_key("1234567", Some(p.as_path())).is_err());
+    }
+
+    #[test]
+    fn save_api_key_validates_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        assert!(save_api_key("abcdef\ngh", Some(p.as_path())).is_err());
+    }
+
+    #[test]
+    fn save_api_key_validates_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        assert!(save_api_key("abcdef\0gh", Some(p.as_path())).is_err());
+    }
+
+    // ── save_config permissions ──
+
+    #[cfg(unix)]
+    #[test]
+    fn save_config_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let c = Config {
+            timeout: Some(1),
+            ..Default::default()
+        };
+        save_config(&c, Some(p.as_path())).unwrap();
+        let mode = fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_config_dir_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        let p = sub.join("config.toml");
+        let c = Config::default();
+        save_config(&c, Some(p.as_path())).unwrap();
+        let mode = fs::metadata(&sub).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    // ── trim_non_empty ──
+
+    #[test]
+    fn trim_non_empty_normal() {
+        assert_eq!(trim_non_empty("hello".into()), Some("hello".into()));
+    }
+
+    #[test]
+    fn trim_non_empty_with_whitespace() {
+        assert_eq!(trim_non_empty("  hello  ".into()), Some("hello".into()));
+    }
+
+    #[test]
+    fn trim_non_empty_empty() {
+        assert_eq!(trim_non_empty(String::new()), None);
+    }
+
+    #[test]
+    fn trim_non_empty_whitespace_only() {
+        assert_eq!(trim_non_empty("   ".into()), None);
+    }
+
+    #[test]
+    fn trim_non_empty_leading_only() {
+        assert_eq!(trim_non_empty("  key".into()), Some("key".into()));
+    }
+
+    #[test]
+    fn trim_non_empty_trailing_only() {
+        assert_eq!(trim_non_empty("key  ".into()), Some("key".into()));
+    }
+
+    // ── load_api_key_for_display ──
+
+    #[test]
+    fn load_api_key_for_display_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        fs::write(&p, "api_key = \"testkey12345\"\n").unwrap();
+        let key = load_api_key_for_display(Some(p.as_path()));
+        assert_eq!(key.as_deref(), Some("testkey12345"));
+    }
+
+    #[test]
+    fn load_api_key_for_display_empty_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        fs::write(&p, "").unwrap();
+        // Verify the config itself has no key
+        assert!(load_config(Some(p.as_path())).api_key.is_none());
+    }
+
+    #[test]
+    fn load_api_key_for_display_whitespace_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        fs::write(&p, "api_key = \"   \"\n").unwrap();
+        // Whitespace-only key should be filtered out by trim_non_empty
+        let config = load_config(Some(p.as_path()));
+        assert_eq!(config.api_key.as_deref(), Some("   "));
+        // But display should filter it
+        let key = load_api_key_for_display(Some(p.as_path()));
+        // Either None (no legacy) or a legacy key — not the whitespace one
+        if let Some(ref k) = key {
+            assert!(
+                !k.trim().is_empty(),
+                "should not return whitespace-only key"
+            );
+        }
     }
 
     // ── config_path ──

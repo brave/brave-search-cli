@@ -858,7 +858,6 @@ const DEFAULT_TIMEOUT: u64 = 30;
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
     let cfg_path = cli.config.as_deref();
-    let config = config::load_config(cfg_path);
 
     // Config subcommand doesn't need an API key.
     if let Command::Config { ref cmd } = cli.command {
@@ -866,11 +865,12 @@ fn main() {
         return;
     }
 
-    let api_key = resolve_api_key(&cli, &config, cfg_path);
-    let base = cli
+    let config = config::load_config(cfg_path);
+    let api_key = resolve_api_key(cli.api_key, config.api_key, cfg_path);
+    let base: Cow<'static, str> = cli
         .base_url
         .or(config.base_url)
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        .map_or(Cow::Borrowed(DEFAULT_BASE_URL), Cow::Owned);
     let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
 
     match cli.command {
@@ -890,46 +890,33 @@ fn main() {
 }
 
 fn non_empty_env(var: &str) -> Option<String> {
-    std::env::var(var)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    std::env::var(var).ok().and_then(config::trim_non_empty)
 }
 
-fn resolve_api_key(cli: &Cli, config: &config::Config, cfg_path: Option<&Path>) -> String {
+fn resolve_api_key(
+    cli_api_key: Option<String>,
+    config_api_key: Option<String>,
+    cfg_path: Option<&Path>,
+) -> String {
     // 1. --api-key flag / BRAVE_SEARCH_API_KEY env (handled by clap)
-    if let Some(key) = cli
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return key.to_string();
+    if let Some(k) = cli_api_key.and_then(config::trim_non_empty) {
+        return k;
     }
-
     // 2. BRAVE_API_KEY fallback (alternate env name used by some tooling)
-    if let Some(key) = non_empty_env("BRAVE_API_KEY") {
-        return key;
+    if let Some(k) = non_empty_env("BRAVE_API_KEY") {
+        return k;
     }
-
     // 3. Config file (filter empty — api_key = "" deserializes as Some(""))
-    if let Some(key) = config
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return key.to_string();
+    if let Some(k) = config_api_key.and_then(config::trim_non_empty) {
+        return k;
     }
-
     // 4. Legacy ~/.config/brave-search/api_key file
-    if let Some(key) = config::load_legacy_api_key() {
-        return key;
+    if let Some(k) = config::load_legacy_api_key() {
+        return k;
     }
-
     // 5. Interactive onboarding
     match config::onboard(cfg_path) {
-        Ok(key) => key,
+        Ok(k) => k,
         Err(msg) => {
             eprintln!("error: {msg}");
             std::process::exit(1);
