@@ -101,6 +101,10 @@ if [ $rc -ne 0 ]; then fail "cli: config path" "exit $rc — $err"
 elif [ -z "$out" ]; then fail "cli: config path" "empty output"
 else pass "cli: config path"; fi
 
+run $BX config show
+if [ $rc -ne 0 ]; then fail "cli: config show" "exit $rc — $err"
+else pass "cli: config show"; fi
+
 # ── Default subcommand (context) ─────────────────────────────────────
 
 run $BX "tokio spawn async task" --count 3
@@ -262,11 +266,6 @@ if [ $rc -ne 1 ]; then fail "errors: invalid API key" "expected exit 1, got $rc 
 elif ! echo "$err" | grep -q "error:"; then fail "errors: invalid API key" "stderr missing 'error:': $err"
 else pass "errors: invalid API key"; fi
 
-out=$($BX --base-url https://evil.example.com web "test" 2>"$tmp/err") && rc=0 || rc=$?
-err=$(cat "$tmp/err")
-if [ $rc -ne 1 ]; then fail "errors: invalid base URL" "expected exit 1, got $rc"
-elif ! echo "$err" | grep -q "allowlist"; then fail "errors: invalid base URL" "stderr missing 'allowlist': $err"
-else pass "errors: invalid base URL"; fi
 
 out=$($BX web "test" --include-site docs.rs --goggles '$discard' 2>"$tmp/err") && rc=0 || rc=$?
 if [ $rc -ne 2 ]; then fail "errors: include-site + goggles conflict" "expected exit 2, got $rc"

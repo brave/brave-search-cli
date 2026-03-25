@@ -243,17 +243,32 @@ Community Goggles: [brave/goggles-quickstart](https://github.com/brave/goggles-q
 3. Different endpoints may require different plans (e.g. Search vs Answers)
 4. Go to "API Keys" in the dashboard and generate a key
 
-## Configuring the API Key
+## Configuration
 
-Three methods, in priority order:
+Settings are resolved in priority order: CLI flag > environment variable > config file > default.
 
-| Priority | Method | Example |
-|----------|--------|---------|
-| 1 (highest) | `--api-key` flag | `bx --api-key KEY web "test"` |
-| 2 | `BRAVE_SEARCH_API_KEY` env var | `export BRAVE_SEARCH_API_KEY=KEY` |
-| 3 | Config file | `bx config set-key KEY` |
+| Setting | CLI Flag | Env Var | Config Key | Default |
+|---------|----------|---------|------------|---------|
+| API key | `--api-key` | `BRAVE_SEARCH_API_KEY` | `api_key` | *(interactive prompt)* |
+| Base URL | `--base-url` | `BRAVE_SEARCH_BASE_URL` | `base_url` | `https://api.search.brave.com` |
+| Timeout | `--timeout` | — | `timeout` | `30` |
 
-The config file is stored at `~/.config/brave-search/api_key` (Linux), `~/Library/Application Support/brave-search/api_key` (macOS), or `%APPDATA%\brave-search\api_key` (Windows).
+**Config file** (`bx config path` to see location):
+- Linux: `~/.config/brave-search/config.toml`
+- macOS: `~/Library/Application Support/brave-search/config.toml`
+- Windows: `%APPDATA%\brave-search\config.toml`
+
+```toml
+api_key = "BSA..."
+base_url = "https://api.search.brave.com"
+timeout = 30
+```
+
+Use `--config <path>` to load a different config file (e.g. one for dev, one for prod):
+
+```bash
+bx --config ~/.config/brave-search/dev.toml web "test"
+```
 
 **Security tip:** Prefer the env var or config file over `--api-key`, which is visible in process listings. Use `bx config set-key` without an argument to enter the key interactively, avoiding shell history.
 
@@ -272,7 +287,7 @@ The config file is stored at `~/.config/brave-search/api_key` (Linux), `~/Librar
 | `spellcheck` | Spell-check a query | `.results[0].query` |
 | `pois` | POI details by ID | (use IDs from `places`) |
 | `descriptions` | AI-generated POI descriptions | `.results[].description` |
-| `config` | Manage API key | `set-key`, `show-key`, `path` |
+| `config` | Manage configuration | `set-key`, `show-key`, `show`, `path` |
 
 ## Usage Examples
 
