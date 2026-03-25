@@ -1040,11 +1040,30 @@ impl GogglesArgs {
     /// Resolves goggles from --goggles, --include-site, or --exclude-site.
     fn resolve(&self) -> Option<String> {
         if !self.goggles.is_empty() {
+            for v in &self.goggles {
+                warn_shell_expanded_goggles(v);
+            }
             let parts: Vec<Cow<str>> = self.goggles.iter().map(|v| resolve_goggles(v)).collect();
             Some(parts.join("\n"))
         } else {
             build_site_goggles(&self.include_site, &self.exclude_site)
         }
+    }
+}
+
+/// Warns if an inline --goggles value looks like it suffered shell variable expansion.
+/// e.g. "$site=example.org" in double quotes → "=example.org" after the shell eats $site.
+fn warn_shell_expanded_goggles(value: &str) {
+    if value.starts_with('@') || value.starts_with("http://") || value.starts_with("https://") {
+        return;
+    }
+    if value.starts_with('=') || value.starts_with(',') {
+        eprintln!(
+            "warning: --goggles value starts with '{}' — \
+             this often means the shell expanded a $variable to nothing\n\
+             hint: use single quotes to prevent expansion, e.g. --goggles '$site=example.org'",
+            &value[..1]
+        );
     }
 }
 
@@ -1580,6 +1599,23 @@ mod tests {
     fn site_goggles_single() {
         let result = build_site_goggles(&["docs.rs".into()], &[]);
         assert_eq!(result.unwrap(), "$discard\n$boost,site=docs.rs");
+    }
+
+    #[test]
+    fn warn_goggles_shell_expansion_triggers() {
+        // Smoke test: should not panic (warns on stderr)
+        warn_shell_expanded_goggles("=example.org");
+        warn_shell_expanded_goggles(",site=example.org");
+    }
+
+    #[test]
+    fn warn_goggles_shell_expansion_skips() {
+        // Should not warn (and not panic)
+        warn_shell_expanded_goggles("$site=example.org");
+        warn_shell_expanded_goggles("$boost=3,site=docs.rs");
+        warn_shell_expanded_goggles("@rules.goggle");
+        warn_shell_expanded_goggles("https://example.com/goggle");
+        warn_shell_expanded_goggles("");
     }
 
     #[test]
