@@ -91,13 +91,12 @@ fn auto_detect_json_type(v: &str) -> serde_json::Value {
     }
 }
 
-/// Builds a JSON object from key-value pairs, skipping None values.
-/// Values are auto-typed: integers, booleans ("true"/"false"), or strings.
-pub fn build_json_body(params: &[(&str, Option<&str>)]) -> serde_json::Value {
+/// Builds a JSON object from pre-typed key-value pairs, skipping None values.
+pub fn build_json_body(params: &[(&str, Option<serde_json::Value>)]) -> serde_json::Value {
     let mut map = serde_json::Map::with_capacity(params.len());
-    for &(key, val) in params {
+    for (key, val) in params {
         if let Some(v) = val {
-            map.insert(key.into(), auto_detect_json_type(v));
+            map.insert((*key).into(), v.clone());
         }
     }
     serde_json::Value::Object(map)
@@ -531,15 +530,23 @@ mod tests {
     #[test]
     fn build_json_body_mixed_types() {
         let body = build_json_body(&[
-            ("q", Some("test query")),
-            ("count", Some("20")),
-            ("spellcheck", Some("true")),
+            ("q", Some("test query".into())),
+            ("count", Some(20.into())),
+            ("spellcheck", Some(true.into())),
             ("freshness", None),
         ]);
         assert_eq!(body["q"], "test query");
         assert_eq!(body["count"], 20);
         assert_eq!(body["spellcheck"], true);
         assert!(body.get("freshness").is_none());
+    }
+
+    #[test]
+    fn build_json_body_preserves_types() {
+        // Verify that values are not auto-detected — strings stay strings
+        let body = build_json_body(&[("q", Some("true".into())), ("tag", Some("42".into()))]);
+        assert_eq!(body["q"], "true"); // not a boolean
+        assert_eq!(body["tag"], "42"); // not a number
     }
 
     #[test]
@@ -550,19 +557,19 @@ mod tests {
 
     #[test]
     fn build_json_body_all_none() {
-        let body = build_json_body(&[("a", None), ("b", None)]);
+        let body: serde_json::Value = build_json_body(&[("a", None), ("b", None)]);
         assert_eq!(body, serde_json::json!({}));
     }
 
     #[test]
     fn build_json_body_single() {
-        let body = build_json_body(&[("q", Some("hello"))]);
+        let body = build_json_body(&[("q", Some("hello".into()))]);
         assert_eq!(body, serde_json::json!({"q": "hello"}));
     }
 
     #[test]
     fn build_json_body_json_special_chars() {
-        let body = build_json_body(&[("q", Some("hello \"world\"\nnewline"))]);
+        let body = build_json_body(&[("q", Some("hello \"world\"\nnewline".into()))]);
         // serde_json handles escaping — just verify it round-trips
         let s = serde_json::to_string(&body).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();

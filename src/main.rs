@@ -322,12 +322,14 @@ struct WebArgs {
     freshness: Option<String>,
 
     /// Text decorations (bold markers in snippets) [omit: API default, --text-decorations: enable, --text-decorations false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    text_decorations: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    text_decorations: Option<bool>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 
     /// Comma-separated result types: discussions,faq,infobox,news,query,summarizer,videos,web,locations
     #[arg(long)]
@@ -337,8 +339,9 @@ struct WebArgs {
     goggles_args: GogglesArgs,
 
     /// Extra snippets from different parts of the page [omit: API default, --extra-snippets: enable, --extra-snippets false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    extra_snippets: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    extra_snippets: Option<bool>,
 
     /// Units: metric or imperial
     #[arg(long, value_parser = ["metric", "imperial"])]
@@ -347,8 +350,9 @@ struct WebArgs {
     /// Enable search operators in the query (site:, intitle:, etc.)
     /// Full list: https://search.brave.com/help/operators
     /// [omit: API default, --operators: enable, --operators false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    operators: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    operators: Option<bool>,
 
     /// Latitude for location-aware results
     #[arg(long, allow_hyphen_values = true)]
@@ -445,14 +449,16 @@ struct VideosArgs {
     freshness: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 
     /// Enable search operators in the query (site:, intitle:, etc.)
     /// Full list: https://search.brave.com/help/operators
     /// [omit: API default, --operators: enable, --operators false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    operators: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    operators: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -490,12 +496,14 @@ struct NewsArgs {
     freshness: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 
     /// Extra snippets [omit: API default, --extra-snippets: enable, --extra-snippets false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    extra_snippets: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    extra_snippets: Option<bool>,
 
     #[command(flatten)]
     goggles_args: GogglesArgs,
@@ -503,8 +511,9 @@ struct NewsArgs {
     /// Enable search operators in the query (site:, intitle:, etc.)
     /// Full list: https://search.brave.com/help/operators
     /// [omit: API default, --operators: enable, --operators false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    operators: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    operators: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -652,23 +661,23 @@ struct ContextArgs {
 
     /// Max URLs to include
     #[arg(long, visible_alias = "max-urls")]
-    maximum_number_of_urls: Option<String>,
+    maximum_number_of_urls: Option<u32>,
 
     /// Max total tokens
     #[arg(long, visible_alias = "max-tokens")]
-    maximum_number_of_tokens: Option<String>,
+    maximum_number_of_tokens: Option<u32>,
 
     /// Max snippets
     #[arg(long, visible_alias = "max-snippets")]
-    maximum_number_of_snippets: Option<String>,
+    maximum_number_of_snippets: Option<u32>,
 
     /// Max tokens per URL
     #[arg(long, visible_alias = "max-tokens-per-url")]
-    maximum_number_of_tokens_per_url: Option<String>,
+    maximum_number_of_tokens_per_url: Option<u32>,
 
     /// Max snippets per URL
     #[arg(long, visible_alias = "max-snippets-per-url")]
-    maximum_number_of_snippets_per_url: Option<String>,
+    maximum_number_of_snippets_per_url: Option<u32>,
 
     /// Threshold mode: strict, balanced, lenient
     #[arg(long, visible_alias = "threshold", value_parser = ["strict", "balanced", "lenient"])]
@@ -678,8 +687,9 @@ struct ContextArgs {
     goggles_args: GogglesArgs,
 
     /// Local results [omit: API default, --enable-local: enable, --enable-local false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    enable_local: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    enable_local: Option<bool>,
 
     /// Latitude for location-aware results
     #[arg(long, allow_hyphen_values = true)]
@@ -1230,23 +1240,27 @@ fn cmd_web(
     ep: Option<&str>,
     timeout: u64,
 ) {
-    let count_str = a.count.map(|v| v.to_string());
-    let offset_str = a.offset.map(|v| v.to_string());
     let goggles_resolved = a.goggles_args.resolve();
     let mut body = api::build_json_body(&[
-        ("country", a.country.as_deref()),
-        ("search_lang", a.search_lang.as_deref()),
-        ("ui_lang", a.ui_lang.as_deref()),
-        ("count", count_str.as_deref()),
-        ("offset", offset_str.as_deref()),
-        ("safesearch", a.safesearch.as_deref()),
-        ("freshness", a.freshness.as_deref()),
-        ("text_decorations", a.text_decorations.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
-        ("goggles", goggles_resolved.as_deref()),
-        ("extra_snippets", a.extra_snippets.as_deref()),
-        ("units", a.units.as_deref()),
-        ("operators", a.operators.as_deref()),
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("ui_lang", a.ui_lang.map(Into::into)),
+        ("count", a.count.map(serde_json::Value::from)),
+        ("offset", a.offset.map(serde_json::Value::from)),
+        ("safesearch", a.safesearch.map(Into::into)),
+        ("freshness", a.freshness.map(Into::into)),
+        (
+            "text_decorations",
+            a.text_decorations.map(serde_json::Value::from),
+        ),
+        ("spellcheck", a.spellcheck.map(serde_json::Value::from)),
+        ("goggles", goggles_resolved.map(Into::into)),
+        (
+            "extra_snippets",
+            a.extra_snippets.map(serde_json::Value::from),
+        ),
+        ("units", a.units.map(Into::into)),
+        ("operators", a.operators.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
     // POST body requires result_filter as a JSON array, not a comma-separated string.
@@ -1309,18 +1323,16 @@ fn cmd_videos(
     ep: Option<&str>,
     timeout: u64,
 ) {
-    let count_str = a.count.map(|v| v.to_string());
-    let offset_str = a.offset.map(|v| v.to_string());
     let mut body = api::build_json_body(&[
-        ("country", a.country.as_deref()),
-        ("search_lang", a.search_lang.as_deref()),
-        ("ui_lang", a.ui_lang.as_deref()),
-        ("count", count_str.as_deref()),
-        ("offset", offset_str.as_deref()),
-        ("safesearch", a.safesearch.as_deref()),
-        ("freshness", a.freshness.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
-        ("operators", a.operators.as_deref()),
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("ui_lang", a.ui_lang.map(Into::into)),
+        ("count", a.count.map(serde_json::Value::from)),
+        ("offset", a.offset.map(serde_json::Value::from)),
+        ("safesearch", a.safesearch.map(Into::into)),
+        ("freshness", a.freshness.map(Into::into)),
+        ("spellcheck", a.spellcheck.map(serde_json::Value::from)),
+        ("operators", a.operators.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
     api::merge_extra_into_json(&mut body, extras);
@@ -1342,21 +1354,22 @@ fn cmd_news(
     ep: Option<&str>,
     timeout: u64,
 ) {
-    let count_str = a.count.map(|v| v.to_string());
-    let offset_str = a.offset.map(|v| v.to_string());
     let goggles_resolved = a.goggles_args.resolve();
     let mut body = api::build_json_body(&[
-        ("country", a.country.as_deref()),
-        ("search_lang", a.search_lang.as_deref()),
-        ("ui_lang", a.ui_lang.as_deref()),
-        ("count", count_str.as_deref()),
-        ("offset", offset_str.as_deref()),
-        ("safesearch", a.safesearch.as_deref()),
-        ("freshness", a.freshness.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
-        ("extra_snippets", a.extra_snippets.as_deref()),
-        ("goggles", goggles_resolved.as_deref()),
-        ("operators", a.operators.as_deref()),
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("ui_lang", a.ui_lang.map(Into::into)),
+        ("count", a.count.map(serde_json::Value::from)),
+        ("offset", a.offset.map(serde_json::Value::from)),
+        ("safesearch", a.safesearch.map(Into::into)),
+        ("freshness", a.freshness.map(Into::into)),
+        ("spellcheck", a.spellcheck.map(serde_json::Value::from)),
+        (
+            "extra_snippets",
+            a.extra_snippets.map(serde_json::Value::from),
+        ),
+        ("goggles", goggles_resolved.map(Into::into)),
+        ("operators", a.operators.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
     api::merge_extra_into_json(&mut body, extras);
@@ -1557,38 +1570,39 @@ fn cmd_context(
     ep: Option<&str>,
     timeout: u64,
 ) {
-    let count_str = a.count.map(|v| v.to_string());
     let goggles_resolved = a.goggles_args.resolve();
     let mut body = api::build_json_body(&[
-        ("country", a.country.as_deref()),
-        ("search_lang", a.search_lang.as_deref()),
-        ("count", count_str.as_deref()),
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("count", a.count.map(serde_json::Value::from)),
         (
             "maximum_number_of_urls",
-            a.maximum_number_of_urls.as_deref(),
+            a.maximum_number_of_urls.map(serde_json::Value::from),
         ),
         (
             "maximum_number_of_tokens",
-            a.maximum_number_of_tokens.as_deref(),
+            a.maximum_number_of_tokens.map(serde_json::Value::from),
         ),
         (
             "maximum_number_of_snippets",
-            a.maximum_number_of_snippets.as_deref(),
+            a.maximum_number_of_snippets.map(serde_json::Value::from),
         ),
         (
             "maximum_number_of_tokens_per_url",
-            a.maximum_number_of_tokens_per_url.as_deref(),
+            a.maximum_number_of_tokens_per_url
+                .map(serde_json::Value::from),
         ),
         (
             "maximum_number_of_snippets_per_url",
-            a.maximum_number_of_snippets_per_url.as_deref(),
+            a.maximum_number_of_snippets_per_url
+                .map(serde_json::Value::from),
         ),
         (
             "context_threshold_mode",
-            a.context_threshold_mode.as_deref(),
+            a.context_threshold_mode.map(Into::into),
         ),
-        ("goggles", goggles_resolved.as_deref()),
-        ("enable_local", a.enable_local.as_deref()),
+        ("goggles", goggles_resolved.map(Into::into)),
+        ("enable_local", a.enable_local.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
     api::merge_extra_into_json(&mut body, extras);
