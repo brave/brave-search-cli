@@ -855,6 +855,24 @@ fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
 const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_TIMEOUT: u64 = 30;
 
+/// Allowed base URLs for the Brave Search API.
+const ALLOWED_BASE_URLS: &[&str] = &[
+    "https://api.search.brave.com",
+    "https://api.search.brave.software",
+];
+
+fn validate_base_url(url: &str) {
+    let normalized = url.trim_end_matches('/');
+    if !ALLOWED_BASE_URLS.contains(&normalized) {
+        eprintln!(
+            "error: base URL not in allowlist (got: {url})\n\
+             hint: allowed URLs are {}",
+            ALLOWED_BASE_URLS.join(", ")
+        );
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
     let cfg_path = cli.config.as_deref();
@@ -865,12 +883,19 @@ fn main() {
         return;
     }
 
-    let config = config::load_config(cfg_path);
+    let config = match config::load_config(cfg_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
     let api_key = resolve_api_key(cli.api_key, config.api_key, cfg_path);
     let base: Cow<'static, str> = cli
         .base_url
         .or(config.base_url)
         .map_or(Cow::Borrowed(DEFAULT_BASE_URL), Cow::Owned);
+    validate_base_url(&base);
     let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
 
     match cli.command {

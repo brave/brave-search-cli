@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 // ── Config struct ────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -39,32 +39,30 @@ fn legacy_key_path() -> Option<PathBuf> {
 
 /// Loads the TOML config file. Returns `Config::default()` if the default path
 /// is missing. Hard-exits if an explicit `--config` override cannot be read.
-pub fn load_config(override_path: Option<&Path>) -> Config {
+pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
     let is_explicit = override_path.is_some();
     let path = match resolve_config_path(override_path) {
         Some(p) => p,
-        None => return Config::default(),
+        None => return Ok(Config::default()),
     };
 
     match fs::read_to_string(&path) {
         Ok(contents) => match toml::from_str::<Config>(&contents) {
-            Ok(cfg) => cfg,
+            Ok(cfg) => Ok(cfg),
             Err(e) => {
                 if is_explicit {
-                    eprintln!("error: failed to parse {}: {e}", path.display());
-                    std::process::exit(1);
+                    return Err(format!("failed to parse {}: {e}", path.display()));
                 }
                 eprintln!("warning: failed to parse {}: {e}", path.display());
-                Config::default()
+                Ok(Config::default())
             }
         },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Config::default(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => {
             if is_explicit {
-                eprintln!("error: cannot read {}: {e}", path.display());
-                std::process::exit(1);
+                return Err(format!("cannot read {}: {e}", path.display()));
             }
-            Config::default()
+            Ok(Config::default())
         }
     }
 }
@@ -147,13 +145,16 @@ fn validate_api_key(key: &str) -> io::Result<()> {
 pub fn save_api_key(key: &str, config_path: Option<&Path>) -> io::Result<()> {
     let trimmed = key.trim();
     validate_api_key(trimmed)?;
-    let mut config = load_config(config_path);
+    let mut config = load_config(config_path).map_err(io::Error::other)?;
     config.api_key = Some(trimmed.to_string());
     save_config(&config, config_path)
 }
 
 /// Masks an API key for display.
 fn mask_key(key: &str) -> String {
+    if key.is_empty() {
+        return "...".into();
+    }
     if !key.is_ascii() {
         "****...".into()
     } else if key.len() > 8 {
@@ -168,7 +169,8 @@ fn mask_key(key: &str) -> String {
 /// Loads the API key from the config file, falling back to the legacy file.
 fn load_api_key_for_display(config_path: Option<&Path>) -> Option<String> {
     load_config(config_path)
-        .api_key
+        .ok()
+        .and_then(|c| c.api_key)
         .and_then(trim_non_empty)
         .or_else(load_legacy_api_key)
 }
@@ -281,7 +283,13 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
             }
         },
         super::ConfigCmd::Show => {
-            let config = load_config(config_path);
+            let config = match load_config(config_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
             let has_any =
                 config.api_key.is_some() || config.base_url.is_some() || config.timeout.is_some();
             if !has_any {
@@ -346,9 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_unknown_keys_ignored() {
-        let c: Config = toml::from_str("api_key = \"k\"\nfuture_field = true\n").unwrap();
-        assert_eq!(c.api_key.as_deref(), Some("k"));
+    fn parse_unknown_keys_rejected() {
+        assert!(toml::from_str::<Config>("api_key = \"k\"\nfuture_field = true\n").is_err());
     }
 
     #[test]
@@ -425,9 +432,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_unknown_section_ignored() {
-        let c: Config = toml::from_str("timeout = 5\n[unknown]\nfoo = 1\n").unwrap();
-        assert_eq!(c.timeout, Some(5));
+    fn parse_unknown_section_rejected() {
+        assert!(toml::from_str::<Config>("timeout = 5\n[unknown]\nfoo = 1\n").is_err());
     }
 
     // ── Config serialization ──
@@ -481,7 +487,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("test.toml");
         fs::write(&p, "timeout = 99\n").unwrap();
-        let c = load_config(Some(p.as_path()));
+        let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.timeout, Some(99));
     }
 
@@ -490,14 +496,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("test.toml");
         fs::write(&p, "").unwrap();
-        let c = load_config(Some(p.as_path()));
+        let c = load_config(Some(p.as_path())).unwrap();
         assert!(c.api_key.is_none());
     }
 
     #[test]
     fn load_config_default_missing_returns_default() {
-        let c = load_config(None);
-        let _ = c;
+        load_config(None).unwrap();
+    }
+
+    #[test]
+    fn load_config_override_invalid_toml_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad.toml");
+        fs::write(&p, "[[[invalid").unwrap();
+        assert!(load_config(Some(p.as_path())).is_err());
+    }
+
+    #[test]
+    fn load_config_override_missing_file_returns_default() {
+        let p = Path::new("/nonexistent/path/config.toml");
+        let c = load_config(Some(p)).unwrap();
+        assert!(c.api_key.is_none());
     }
 
     // ── save_config + round trip ──
@@ -512,7 +532,7 @@ mod tests {
             timeout: Some(15),
         };
         save_config(&c, Some(p.as_path())).unwrap();
-        let loaded = load_config(Some(p.as_path()));
+        let loaded = load_config(Some(p.as_path())).unwrap();
         assert_eq!(loaded.api_key.as_deref(), Some("mykey12345"));
         assert!(loaded.base_url.is_none());
         assert_eq!(loaded.timeout, Some(15));
@@ -538,7 +558,7 @@ mod tests {
         let p = dir.path().join("config.toml");
         fs::write(&p, "base_url = \"https://x.com\"\ntimeout = 20\n").unwrap();
         save_api_key("newkey12345", Some(p.as_path())).unwrap();
-        let c = load_config(Some(p.as_path()));
+        let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.api_key.as_deref(), Some("newkey12345"));
         assert_eq!(c.base_url.as_deref(), Some("https://x.com"));
         assert_eq!(c.timeout, Some(20));
@@ -570,7 +590,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config.toml");
         save_api_key("  testkey12345  ", Some(p.as_path())).unwrap();
-        let c = load_config(Some(p.as_path()));
+        let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.api_key.as_deref(), Some("testkey12345"));
     }
 
@@ -579,7 +599,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config.toml");
         save_api_key("12345678", Some(p.as_path())).unwrap();
-        let c = load_config(Some(p.as_path()));
+        let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.api_key.as_deref(), Some("12345678"));
     }
 
@@ -739,7 +759,7 @@ mod tests {
         let p = dir.path().join("config.toml");
         fs::write(&p, "").unwrap();
         // Verify the config itself has no key
-        assert!(load_config(Some(p.as_path())).api_key.is_none());
+        assert!(load_config(Some(p.as_path())).unwrap().api_key.is_none());
     }
 
     #[test]
@@ -748,7 +768,7 @@ mod tests {
         let p = dir.path().join("config.toml");
         fs::write(&p, "api_key = \"   \"\n").unwrap();
         // Whitespace-only key should be filtered out by trim_non_empty
-        let config = load_config(Some(p.as_path()));
+        let config = load_config(Some(p.as_path())).unwrap();
         assert_eq!(config.api_key.as_deref(), Some("   "));
         // But display should filter it
         let key = load_api_key_for_display(Some(p.as_path()));

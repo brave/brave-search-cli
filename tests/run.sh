@@ -266,6 +266,11 @@ if [ $rc -ne 1 ]; then fail "errors: invalid API key" "expected exit 1, got $rc 
 elif ! echo "$err" | grep -q "error:"; then fail "errors: invalid API key" "stderr missing 'error:': $err"
 else pass "errors: invalid API key"; fi
 
+out=$($BX --base-url https://evil.example.com web "test" 2>"$tmp/err") && rc=0 || rc=$?
+err=$(cat "$tmp/err")
+if [ $rc -ne 1 ]; then fail "errors: invalid base URL" "expected exit 1, got $rc"
+elif ! echo "$err" | grep -q "allowlist"; then fail "errors: invalid base URL" "stderr missing 'allowlist': $err"
+else pass "errors: invalid base URL"; fi
 
 out=$($BX web "test" --include-site docs.rs --goggles '$discard' 2>"$tmp/err") && rc=0 || rc=$?
 if [ $rc -ne 2 ]; then fail "errors: include-site + goggles conflict" "expected exit 2, got $rc"
