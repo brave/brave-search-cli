@@ -43,13 +43,24 @@ fn read_line_bounded<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> io::Resul
 }
 
 /// Builds a query string from key-value pairs, skipping None values.
-/// Values are URL-encoded.
-pub fn build_query(params: &[(&str, Option<&str>)]) -> String {
+/// Values are URL-encoded. Extras override params with the same key.
+pub fn build_query(params: &[(&str, Option<&str>)], extras: &[(&str, &str)]) -> String {
     let mut parts = Vec::new();
     for &(key, val) in params {
         if let Some(v) = val {
+            if let Some(&(_, ev)) = extras.iter().find(|(k, _)| *k == key) {
+                eprintln!("warning: --extra '{key}={ev}' overrides existing parameter");
+                continue;
+            }
             parts.push(format!("{}={}", key, urlencoding::encode(v)));
         }
+    }
+    for &(key, val) in extras {
+        parts.push(format!(
+            "{}={}",
+            urlencoding::encode(key),
+            urlencoding::encode(val)
+        ));
     }
     if parts.is_empty() {
         String::new()
@@ -58,10 +69,19 @@ pub fn build_query(params: &[(&str, Option<&str>)]) -> String {
     }
 }
 
-/// Infers a JSON type from a string value: i64 → Number, "true"/"false" → Bool, else String.
+/// Infers a JSON type from a string value:
+/// i64 → integer, finite f64 → float, "true"/"false" → bool, else string.
 fn auto_detect_json_type(v: &str) -> serde_json::Value {
     if let Ok(n) = v.parse::<i64>() {
         n.into()
+    } else if let Ok(f) = v.parse::<f64>() {
+        if f.is_finite() {
+            serde_json::Number::from_f64(f)
+                .map(serde_json::Value::Number)
+                .unwrap_or_else(|| v.into())
+        } else {
+            v.into()
+        }
     } else if v == "true" {
         true.into()
     } else if v == "false" {
@@ -100,38 +120,37 @@ pub fn merge_extra_into_json(body: &mut serde_json::Value, extras: &[(&str, &str
     }
 }
 
-/// Appends extra KEY=VALUE pairs to a query string. Warns on collision with existing params.
-pub fn append_extra_to_query(
-    qs: &mut String,
-    params: &[(&str, Option<&str>)],
-    extras: &[(&str, &str)],
-) {
-    for &(key, val) in extras {
-        if params.iter().any(|&(k, v)| k == key && v.is_some()) {
-            eprintln!("warning: --extra '{key}={val}' overrides existing parameter");
-        }
-        qs.push(if qs.is_empty() { '?' } else { '&' });
-        qs.push_str(&urlencoding::encode(key));
-        qs.push('=');
-        qs.push_str(&urlencoding::encode(val));
-    }
-}
-
 /// Builds a query string that supports repeated keys (e.g. ids=a&ids=b).
+/// Extras override params with the same key.
 pub fn build_query_repeated(
     params: &[(&str, Option<&str>)],
     repeated: &[(&str, &[String])],
+    extras: &[(&str, &str)],
 ) -> String {
     let mut parts = Vec::new();
     for &(key, val) in params {
         if let Some(v) = val {
+            if let Some(&(_, ev)) = extras.iter().find(|(k, _)| *k == key) {
+                eprintln!("warning: --extra '{key}={ev}' overrides existing parameter");
+                continue;
+            }
             parts.push(format!("{}={}", key, urlencoding::encode(v)));
         }
     }
     for &(key, vals) in repeated {
+        if extras.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
         for v in vals {
             parts.push(format!("{}={}", key, urlencoding::encode(v)));
         }
+    }
+    for &(key, val) in extras {
+        parts.push(format!(
+            "{}={}",
+            urlencoding::encode(key),
+            urlencoding::encode(val)
+        ));
     }
     if parts.is_empty() {
         String::new()
@@ -445,10 +464,17 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_not_float() {
-        // No float detection — avoids false positives on version-like strings
-        assert_eq!(auto_detect_json_type("1.5"), serde_json::json!("1.5"));
+    fn auto_detect_floats() {
+        assert_eq!(auto_detect_json_type("1.5"), serde_json::json!(1.5));
+        assert_eq!(auto_detect_json_type("-3.14"), serde_json::json!(-3.14));
+        assert_eq!(auto_detect_json_type("0.0"), serde_json::json!(0.0));
+        assert_eq!(auto_detect_json_type("1e5"), serde_json::json!(1e5));
+        // Version-like strings naturally fail f64::parse
         assert_eq!(auto_detect_json_type("1.2.3"), serde_json::json!("1.2.3"));
+        // Non-finite values stay as strings
+        assert_eq!(auto_detect_json_type("inf"), serde_json::json!("inf"));
+        assert_eq!(auto_detect_json_type("NaN"), serde_json::json!("NaN"));
+        assert_eq!(auto_detect_json_type("-inf"), serde_json::json!("-inf"));
     }
 
     #[test]
@@ -459,10 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_i64_overflow() {
+    fn auto_detect_i64_overflow_becomes_float() {
+        // Values exceeding i64 range that parse as finite f64 become floats
         assert_eq!(
             auto_detect_json_type("99999999999999999999"),
-            serde_json::json!("99999999999999999999")
+            serde_json::json!(1e20)
         );
     }
 
@@ -485,8 +512,8 @@ mod tests {
             serde_json::json!(9223372036854775807_i64)
         );
         assert_eq!(
-            auto_detect_json_type("9223372036854775808"), // i64::MAX + 1
-            serde_json::json!("9223372036854775808")
+            auto_detect_json_type("9223372036854775808"), // i64::MAX + 1 → f64
+            serde_json::json!(9.223372036854776e+18)
         );
         assert_eq!(
             auto_detect_json_type("-9223372036854775808"), // i64::MIN
@@ -594,98 +621,22 @@ mod tests {
         assert_eq!(body["k"], 2);
     }
 
-    // ── append_extra_to_query ────────────────────────────────────────
-
-    #[test]
-    fn append_extra_to_empty_qs() {
-        let params: &[(&str, Option<&str>)] = &[];
-        let mut qs = String::new();
-        append_extra_to_query(&mut qs, params, &[("key", "val")]);
-        assert_eq!(qs, "?key=val");
-    }
-
-    #[test]
-    fn append_extra_to_existing_qs() {
-        let params: &[(&str, Option<&str>)] = &[("q", Some("test"))];
-        let mut qs = "?q=test".to_string();
-        append_extra_to_query(&mut qs, params, &[("extra", "val")]);
-        assert_eq!(qs, "?q=test&extra=val");
-    }
-
-    #[test]
-    fn append_extra_url_encodes() {
-        let params: &[(&str, Option<&str>)] = &[];
-        let mut qs = String::new();
-        append_extra_to_query(&mut qs, params, &[("q", "hello world"), ("x", "a&b=c")]);
-        assert_eq!(qs, "?q=hello%20world&x=a%26b%3Dc");
-    }
-
-    #[test]
-    fn append_extra_encodes_key() {
-        let params: &[(&str, Option<&str>)] = &[];
-        let mut qs = String::new();
-        append_extra_to_query(&mut qs, params, &[("a&b", "val"), ("x=y", "z")]);
-        assert_eq!(qs, "?a%26b=val&x%3Dy=z");
-    }
-
-    #[test]
-    fn append_extra_multiple() {
-        let params: &[(&str, Option<&str>)] = &[];
-        let mut qs = String::new();
-        append_extra_to_query(&mut qs, params, &[("a", "1"), ("b", "2")]);
-        assert_eq!(qs, "?a=1&b=2");
-    }
-
-    #[test]
-    fn append_extra_collision_produces_duplicate() {
-        let params: &[(&str, Option<&str>)] = &[("count", Some("20"))];
-        let mut qs = "?count=20".to_string();
-        append_extra_to_query(&mut qs, params, &[("count", "5")]);
-        // Appends duplicate — server decides which wins (warns on stderr)
-        assert_eq!(qs, "?count=20&count=5");
-    }
-
-    #[test]
-    fn append_extra_no_collision_when_param_is_none() {
-        let params: &[(&str, Option<&str>)] = &[("freshness", None)];
-        let mut qs = String::new();
-        // freshness is None so no collision — extra fills the gap
-        append_extra_to_query(&mut qs, params, &[("freshness", "pw")]);
-        assert_eq!(qs, "?freshness=pw");
-    }
-
-    #[test]
-    fn append_extra_empty_noop() {
-        let params: &[(&str, Option<&str>)] = &[("q", Some("test"))];
-        let mut qs = "?q=test".to_string();
-        append_extra_to_query(&mut qs, params, &[]);
-        assert_eq!(qs, "?q=test");
-    }
-
-    #[test]
-    fn append_extra_empty_value() {
-        let params: &[(&str, Option<&str>)] = &[];
-        let mut qs = String::new();
-        append_extra_to_query(&mut qs, params, &[("key", "")]);
-        assert_eq!(qs, "?key=");
-    }
-
     // ── build_query ──────────────────────────────────────────────────
 
     #[test]
     fn build_query_all_none() {
-        assert_eq!(build_query(&[("a", None), ("b", None)]), "");
+        assert_eq!(build_query(&[("a", None), ("b", None)], &[]), "");
     }
 
     #[test]
     fn build_query_single() {
-        assert_eq!(build_query(&[("q", Some("test"))]), "?q=test");
+        assert_eq!(build_query(&[("q", Some("test"))], &[]), "?q=test");
     }
 
     #[test]
     fn build_query_multiple() {
         assert_eq!(
-            build_query(&[("q", Some("test")), ("count", Some("20"))]),
+            build_query(&[("q", Some("test")), ("count", Some("20"))], &[]),
             "?q=test&count=20"
         );
     }
@@ -693,7 +644,7 @@ mod tests {
     #[test]
     fn build_query_skips_none() {
         assert_eq!(
-            build_query(&[("q", Some("test")), ("x", None), ("c", Some("5"))]),
+            build_query(&[("q", Some("test")), ("x", None), ("c", Some("5"))], &[]),
             "?q=test&c=5"
         );
     }
@@ -701,19 +652,59 @@ mod tests {
     #[test]
     fn build_query_url_encodes_values() {
         assert_eq!(
-            build_query(&[("q", Some("hello world")), ("x", Some("a&b"))]),
+            build_query(&[("q", Some("hello world")), ("x", Some("a&b"))], &[]),
             "?q=hello%20world&x=a%26b"
         );
     }
 
     #[test]
     fn build_query_unicode() {
-        assert_eq!(build_query(&[("q", Some("café"))]), "?q=caf%C3%A9");
+        assert_eq!(build_query(&[("q", Some("café"))], &[]), "?q=caf%C3%A9");
     }
 
     #[test]
     fn build_query_empty() {
-        assert_eq!(build_query(&[]), "");
+        assert_eq!(build_query(&[], &[]), "");
+    }
+
+    #[test]
+    fn build_query_extras_appended() {
+        assert_eq!(
+            build_query(&[("q", Some("test"))], &[("extra", "val")]),
+            "?q=test&extra=val"
+        );
+    }
+
+    #[test]
+    fn build_query_extras_override() {
+        assert_eq!(
+            build_query(
+                &[("q", Some("test")), ("count", Some("20"))],
+                &[("count", "5")]
+            ),
+            "?q=test&count=5"
+        );
+    }
+
+    #[test]
+    fn build_query_extras_no_collision_when_param_is_none() {
+        assert_eq!(
+            build_query(&[("freshness", None)], &[("freshness", "pw")]),
+            "?freshness=pw"
+        );
+    }
+
+    #[test]
+    fn build_query_extras_url_encodes() {
+        assert_eq!(
+            build_query(&[], &[("q", "hello world"), ("a&b", "c=d")]),
+            "?q=hello%20world&a%26b=c%3Dd"
+        );
+    }
+
+    #[test]
+    fn build_query_empty_extras_noop() {
+        assert_eq!(build_query(&[("q", Some("test"))], &[]), "?q=test");
     }
 
     // ── build_query_repeated ─────────────────────────────────────────
@@ -722,7 +713,7 @@ mod tests {
     fn build_query_repeated_basic() {
         let ids = vec!["a".into(), "b".into()];
         assert_eq!(
-            build_query_repeated(&[("lang", Some("en"))], &[("ids", &ids)]),
+            build_query_repeated(&[("lang", Some("en"))], &[("ids", &ids)], &[]),
             "?lang=en&ids=a&ids=b"
         );
     }
@@ -731,7 +722,7 @@ mod tests {
     fn build_query_repeated_empty_repeated() {
         let ids: Vec<String> = vec![];
         assert_eq!(
-            build_query_repeated(&[("lang", Some("en"))], &[("ids", &ids)]),
+            build_query_repeated(&[("lang", Some("en"))], &[("ids", &ids)], &[]),
             "?lang=en"
         );
     }
@@ -740,7 +731,7 @@ mod tests {
     fn build_query_repeated_only_repeated() {
         let ids = vec!["x".into(), "y".into(), "z".into()];
         assert_eq!(
-            build_query_repeated(&[], &[("ids", &ids)]),
+            build_query_repeated(&[], &[("ids", &ids)], &[]),
             "?ids=x&ids=y&ids=z"
         );
     }

@@ -917,8 +917,8 @@ fn main() {
     let ep = cli.endpoint.as_deref();
 
     if let Some(ep) = ep {
-        if !ep.starts_with('/') {
-            eprintln!("error: --endpoint must start with '/', got: {ep}");
+        if let Err(msg) = check_endpoint(ep) {
+            eprintln!("error: {msg}");
             std::process::exit(1);
         }
     }
@@ -1009,6 +1009,17 @@ struct LocationHeaders {
     state_name: Option<String>,
     country: Option<String>,
     postal_code: Option<String>,
+}
+
+/// Defense-in-depth: reject endpoint paths containing control characters.
+fn check_endpoint(ep: &str) -> Result<(), String> {
+    if !ep.starts_with('/') {
+        return Err(format!("--endpoint must start with '/', got: {ep}"));
+    }
+    if ep.bytes().any(|b| b < 32 || b == 127) {
+        return Err("--endpoint contains control characters".into());
+    }
+    Ok(())
 }
 
 /// Defense-in-depth: reject HTTP header values containing control characters
@@ -1223,7 +1234,6 @@ fn cmd_web(
     let offset_str = a.offset.map(|v| v.to_string());
     let goggles_resolved = a.goggles_args.resolve();
     let mut body = api::build_json_body(&[
-        ("q", Some(a.q.as_str())),
         ("country", a.country.as_deref()),
         ("search_lang", a.search_lang.as_deref()),
         ("ui_lang", a.ui_lang.as_deref()),
@@ -1238,6 +1248,7 @@ fn cmd_web(
         ("units", a.units.as_deref()),
         ("operators", a.operators.as_deref()),
     ]);
+    body["q"] = a.q.into();
     // POST body requires result_filter as a JSON array, not a comma-separated string.
     if let Some(ref rf) = a.result_filter {
         let arr: Vec<_> = rf
@@ -1285,8 +1296,7 @@ fn cmd_images(
         ("safesearch", a.safesearch.as_deref()),
         ("spellcheck", a.spellcheck.as_deref()),
     ];
-    let mut qs = api::build_query(params);
-    api::append_extra_to_query(&mut qs, params, extras);
+    let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/images/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1302,7 +1312,6 @@ fn cmd_videos(
     let count_str = a.count.map(|v| v.to_string());
     let offset_str = a.offset.map(|v| v.to_string());
     let mut body = api::build_json_body(&[
-        ("q", Some(a.q.as_str())),
         ("country", a.country.as_deref()),
         ("search_lang", a.search_lang.as_deref()),
         ("ui_lang", a.ui_lang.as_deref()),
@@ -1313,6 +1322,7 @@ fn cmd_videos(
         ("spellcheck", a.spellcheck.as_deref()),
         ("operators", a.operators.as_deref()),
     ]);
+    body["q"] = a.q.into();
     api::merge_extra_into_json(&mut body, extras);
     api::post_json(
         base,
@@ -1336,7 +1346,6 @@ fn cmd_news(
     let offset_str = a.offset.map(|v| v.to_string());
     let goggles_resolved = a.goggles_args.resolve();
     let mut body = api::build_json_body(&[
-        ("q", Some(a.q.as_str())),
         ("country", a.country.as_deref()),
         ("search_lang", a.search_lang.as_deref()),
         ("ui_lang", a.ui_lang.as_deref()),
@@ -1349,6 +1358,7 @@ fn cmd_news(
         ("goggles", goggles_resolved.as_deref()),
         ("operators", a.operators.as_deref()),
     ]);
+    body["q"] = a.q.into();
     api::merge_extra_into_json(&mut body, extras);
     api::post_json(
         base,
@@ -1376,8 +1386,7 @@ fn cmd_suggest(
         ("count", count_str.as_deref()),
         ("rich", a.rich.as_deref()),
     ];
-    let mut qs = api::build_query(params);
-    api::append_extra_to_query(&mut qs, params, extras);
+    let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/suggest/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1395,8 +1404,7 @@ fn cmd_spellcheck(
         ("lang", a.lang.as_deref()),
         ("country", a.country.as_deref()),
     ];
-    let mut qs = api::build_query(params);
-    api::append_extra_to_query(&mut qs, params, extras);
+    let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/spellcheck/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1552,7 +1560,6 @@ fn cmd_context(
     let count_str = a.count.map(|v| v.to_string());
     let goggles_resolved = a.goggles_args.resolve();
     let mut body = api::build_json_body(&[
-        ("q", Some(a.q.as_str())),
         ("country", a.country.as_deref()),
         ("search_lang", a.search_lang.as_deref()),
         ("count", count_str.as_deref()),
@@ -1583,6 +1590,7 @@ fn cmd_context(
         ("goggles", goggles_resolved.as_deref()),
         ("enable_local", a.enable_local.as_deref()),
     ]);
+    body["q"] = a.q.into();
     api::merge_extra_into_json(&mut body, extras);
     let loc = LocationHeaders {
         lat: a.lat,
@@ -1628,8 +1636,7 @@ fn cmd_places(
         ("safesearch", a.safesearch.as_deref()),
         ("spellcheck", a.spellcheck.as_deref()),
     ];
-    let mut qs = api::build_query(params);
-    api::append_extra_to_query(&mut qs, params, extras);
+    let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/place_search"));
     api::get(base, &path, key, timeout);
 }
@@ -1651,8 +1658,7 @@ fn cmd_pois(
         ("ui_lang", a.ui_lang.as_deref()),
         ("units", a.units.as_deref()),
     ];
-    let mut qs = api::build_query_repeated(params, &[("ids", &a.ids)]);
-    api::append_extra_to_query(&mut qs, params, extras);
+    let qs = api::build_query_repeated(params, &[("ids", &a.ids)], extras);
     let mut headers = Vec::new();
     if let Some(ref v) = a.lat {
         validate_header_value("X-Loc-Lat", v);
@@ -1679,8 +1685,7 @@ fn cmd_descriptions(
         std::process::exit(1);
     }
     let params: &[(&str, Option<&str>)] = &[];
-    let mut qs = api::build_query_repeated(params, &[("ids", &a.ids)]);
-    api::append_extra_to_query(&mut qs, params, extras);
+    let qs = api::build_query_repeated(params, &[("ids", &a.ids)], extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/descriptions"));
     api::get(base, &path, key, timeout);
 }
@@ -1746,6 +1751,31 @@ mod tests {
     #[test]
     fn check_header_value_rejects_null() {
         assert!(check_header_value("X-Test", "evil\0injection").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_accepts_normal_path() {
+        assert!(check_endpoint("/res/v1/web/search").is_ok());
+    }
+
+    #[test]
+    fn check_endpoint_rejects_missing_slash() {
+        assert!(check_endpoint("res/v1/web/search").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_rejects_newline() {
+        assert!(check_endpoint("/foo\nbar").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_rejects_carriage_return() {
+        assert!(check_endpoint("/foo\rbar").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_rejects_null() {
+        assert!(check_endpoint("/foo\0bar").is_err());
     }
 
     #[test]
