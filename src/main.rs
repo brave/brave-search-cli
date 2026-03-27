@@ -937,6 +937,7 @@ fn resolve_api_key(
     }
     // 4. Legacy ~/.config/brave-search/api_key file
     if let Some(k) = config::load_legacy_api_key() {
+        eprintln!("hint: using legacy api_key file; run `bx config set-key` to migrate");
         return k;
     }
     // 5. Interactive onboarding
@@ -1775,32 +1776,32 @@ mod tests {
     #[test]
     fn inject_skips_config_flag() {
         assert_eq!(
-            inject_default_subcommand_impl(args("bx --config /tmp/c.toml myquery")),
-            args("bx --config /tmp/c.toml context myquery")
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json myquery")),
+            args("bx --config /tmp/c.json context myquery")
         );
     }
 
     #[test]
     fn inject_config_equals_form() {
         assert_eq!(
-            inject_default_subcommand_impl(args("bx --config=/tmp/c.toml myquery")),
-            args("bx --config=/tmp/c.toml context myquery")
+            inject_default_subcommand_impl(args("bx --config=/tmp/c.json myquery")),
+            args("bx --config=/tmp/c.json context myquery")
         );
     }
 
     #[test]
     fn inject_config_with_subcommand() {
         assert_eq!(
-            inject_default_subcommand_impl(args("bx --config /tmp/c.toml web myquery")),
-            args("bx --config /tmp/c.toml web myquery")
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json web myquery")),
+            args("bx --config /tmp/c.json web myquery")
         );
     }
 
     #[test]
     fn inject_config_with_other_flags() {
         assert_eq!(
-            inject_default_subcommand_impl(args("bx --config /tmp/c.toml --timeout 60 myquery")),
-            args("bx --config /tmp/c.toml --timeout 60 context myquery")
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json --timeout 60 myquery")),
+            args("bx --config /tmp/c.json --timeout 60 context myquery")
         );
     }
 
@@ -1815,8 +1816,8 @@ mod tests {
     #[test]
     fn inject_config_before_double_dash() {
         assert_eq!(
-            inject_default_subcommand_impl(args("bx --config /tmp/c.toml -- web")),
-            args("bx --config /tmp/c.toml context -- web")
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json -- web")),
+            args("bx --config /tmp/c.json context -- web")
         );
     }
 
