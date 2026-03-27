@@ -410,8 +410,9 @@ struct ImagesArgs {
     safesearch: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -535,8 +536,9 @@ struct SuggestArgs {
     count: Option<u16>,
 
     /// Rich suggestions [omit: API default, --rich: enable, --rich false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    rich: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    rich: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -771,8 +773,9 @@ struct PlacesArgs {
     safesearch: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -1021,13 +1024,26 @@ struct LocationHeaders {
     postal_code: Option<String>,
 }
 
-/// Defense-in-depth: reject endpoint paths containing control characters.
+/// Defense-in-depth: validate endpoint path against a strict allowlist.
+/// Allowed characters: ASCII alphanumeric, `/`, `-`, `_`, `.`
 fn check_endpoint(ep: &str) -> Result<(), String> {
     if !ep.starts_with('/') {
         return Err(format!("--endpoint must start with '/', got: {ep}"));
     }
-    if ep.bytes().any(|b| b < 32 || b == 127) {
-        return Err("--endpoint contains control characters".into());
+    if let Some(b) = ep
+        .bytes()
+        .find(|&b| !b.is_ascii_alphanumeric() && b != b'/' && b != b'-' && b != b'_' && b != b'.')
+    {
+        return Err(format!(
+            "--endpoint contains disallowed character '{}'",
+            char::from(b)
+        ));
+    }
+    if ep.contains("//") {
+        return Err("--endpoint must not contain consecutive slashes".into());
+    }
+    if ep.split('/').any(|s| s == "..") {
+        return Err("--endpoint must not contain '..' path segments".into());
     }
     Ok(())
 }
@@ -1271,7 +1287,10 @@ fn cmd_web(
             .collect();
         body["result_filter"] = serde_json::Value::Array(arr);
     }
-    api::merge_extra_into_json(&mut body, extras);
+    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
     let loc = LocationHeaders {
         lat: a.lat,
         long: a.long,
@@ -1308,7 +1327,10 @@ fn cmd_images(
         ("search_lang", a.search_lang.as_deref()),
         ("count", count_str.as_deref()),
         ("safesearch", a.safesearch.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
+        (
+            "spellcheck",
+            a.spellcheck.map(|v| if v { "true" } else { "false" }),
+        ),
     ];
     let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/images/search"));
@@ -1335,7 +1357,10 @@ fn cmd_videos(
         ("operators", a.operators.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
-    api::merge_extra_into_json(&mut body, extras);
+    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
     api::post_json(
         base,
         ep.unwrap_or("/res/v1/videos/search"),
@@ -1372,7 +1397,10 @@ fn cmd_news(
         ("operators", a.operators.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
-    api::merge_extra_into_json(&mut body, extras);
+    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
     api::post_json(
         base,
         ep.unwrap_or("/res/v1/news/search"),
@@ -1397,7 +1425,7 @@ fn cmd_suggest(
         ("lang", a.lang.as_deref()),
         ("country", a.country.as_deref()),
         ("count", count_str.as_deref()),
-        ("rich", a.rich.as_deref()),
+        ("rich", a.rich.map(|v| if v { "true" } else { "false" })),
     ];
     let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/suggest/search"));
@@ -1451,7 +1479,10 @@ fn cmd_answers(
                 std::process::exit(1);
             }
         };
-        api::merge_extra_into_json(&mut body, extras);
+        if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
+            eprintln!("error: {msg}");
+            std::process::exit(1);
+        }
 
         let is_stream = body["stream"].as_bool().unwrap_or(true);
         if is_stream {
@@ -1553,7 +1584,10 @@ fn cmd_answers(
         obj.insert("web_search_options".into(), wso.into());
     }
 
-    api::merge_extra_into_json(&mut body, extras);
+    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
 
     if stream {
         api::post_json_stream(base, path, key, &body, &[], timeout);
@@ -1605,7 +1639,10 @@ fn cmd_context(
         ("enable_local", a.enable_local.map(serde_json::Value::from)),
     ]);
     body["q"] = a.q.into();
-    api::merge_extra_into_json(&mut body, extras);
+    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
     let loc = LocationHeaders {
         lat: a.lat,
         long: a.long,
@@ -1648,7 +1685,10 @@ fn cmd_places(
         ("ui_lang", a.ui_lang.as_deref()),
         ("units", a.units.as_deref()),
         ("safesearch", a.safesearch.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
+        (
+            "spellcheck",
+            a.spellcheck.map(|v| if v { "true" } else { "false" }),
+        ),
     ];
     let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/place_search"));
@@ -1768,8 +1808,13 @@ mod tests {
     }
 
     #[test]
-    fn check_endpoint_accepts_normal_path() {
+    fn check_endpoint_accepts_valid_paths() {
         assert!(check_endpoint("/res/v1/web/search").is_ok());
+        assert!(check_endpoint("/res/v1/llm/context").is_ok());
+        assert!(check_endpoint("/beta/v2/new-endpoint").is_ok());
+        assert!(check_endpoint("/").is_ok());
+        assert!(check_endpoint("/res/v1/").is_ok()); // trailing slash
+        assert!(check_endpoint("/res/v1/foo..bar").is_ok()); // ".." as substring
     }
 
     #[test]
@@ -1778,18 +1823,30 @@ mod tests {
     }
 
     #[test]
-    fn check_endpoint_rejects_newline() {
-        assert!(check_endpoint("/foo\nbar").is_err());
+    fn check_endpoint_rejects_disallowed_chars() {
+        assert!(check_endpoint("/foo?bar=1").is_err()); // query string
+        assert!(check_endpoint("/foo#frag").is_err()); // fragment
+        assert!(check_endpoint("/foo@bar").is_err()); // authority
+        assert!(check_endpoint("/foo\\bar").is_err()); // backslash
+        assert!(check_endpoint("/foo%2e").is_err()); // percent encoding
+        assert!(check_endpoint("/foo;bar").is_err()); // semicolon
+        assert!(check_endpoint("/foo bar").is_err()); // space
+        assert!(check_endpoint("/foo\nbar").is_err()); // newline
+        assert!(check_endpoint("/foo\rbar").is_err()); // carriage return
+        assert!(check_endpoint("/foo\0bar").is_err()); // null
     }
 
     #[test]
-    fn check_endpoint_rejects_carriage_return() {
-        assert!(check_endpoint("/foo\rbar").is_err());
+    fn check_endpoint_rejects_path_traversal() {
+        assert!(check_endpoint("/../admin").is_err());
+        assert!(check_endpoint("/res/../admin").is_err());
+        assert!(check_endpoint("/res/v1/..").is_err());
     }
 
     #[test]
-    fn check_endpoint_rejects_null() {
-        assert!(check_endpoint("/foo\0bar").is_err());
+    fn check_endpoint_rejects_consecutive_slashes() {
+        assert!(check_endpoint("//evil.com").is_err());
+        assert!(check_endpoint("/res//v1").is_err());
     }
 
     #[test]

@@ -103,13 +103,15 @@ pub fn build_json_body(params: &[(&str, Option<serde_json::Value>)]) -> serde_js
 }
 
 /// Merges extra KEY=VALUE pairs into a JSON body. Warns on collision.
-pub fn merge_extra_into_json(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
+pub fn merge_extra_into_json(
+    body: &mut serde_json::Value,
+    extras: &[(&str, &str)],
+) -> Result<(), String> {
     if extras.is_empty() {
-        return;
+        return Ok(());
     }
     let Some(obj) = body.as_object_mut() else {
-        eprintln!("error: --extra requires a JSON object body");
-        std::process::exit(1);
+        return Err("--extra requires a JSON object body".into());
     };
     for &(key, val) in extras {
         if obj.contains_key(key) {
@@ -117,6 +119,7 @@ pub fn merge_extra_into_json(body: &mut serde_json::Value, extras: &[(&str, &str
         }
         obj.insert(key.into(), auto_detect_json_type(val));
     }
+    Ok(())
 }
 
 /// Builds a query string that supports repeated keys (e.g. ids=a&ids=b).
@@ -581,7 +584,7 @@ mod tests {
     #[test]
     fn merge_extra_adds_new_keys() {
         let mut body = serde_json::json!({"q": "test"});
-        merge_extra_into_json(&mut body, &[("count", "5"), ("custom", "val")]);
+        merge_extra_into_json(&mut body, &[("count", "5"), ("custom", "val")]).unwrap();
         assert_eq!(body["count"], 5);
         assert_eq!(body["custom"], "val");
         assert_eq!(body["q"], "test"); // unchanged
@@ -590,7 +593,7 @@ mod tests {
     #[test]
     fn merge_extra_overrides_existing() {
         let mut body = serde_json::json!({"count": 20});
-        merge_extra_into_json(&mut body, &[("count", "5")]);
+        merge_extra_into_json(&mut body, &[("count", "5")]).unwrap();
         assert_eq!(body["count"], 5);
     }
 
@@ -598,24 +601,42 @@ mod tests {
     fn merge_extra_empty_noop() {
         let mut body = serde_json::json!({"q": "test"});
         let original = body.clone();
-        merge_extra_into_json(&mut body, &[]);
+        merge_extra_into_json(&mut body, &[]).unwrap();
         assert_eq!(body, original);
     }
 
     #[test]
     fn merge_extra_empty_on_non_object() {
-        // Empty extras returns early before the object check, so non-object
-        // bodies are fine. Non-empty extras on a non-object body exits with
-        // an error (stdin mode in cmd_answers can receive arbitrary JSON).
+        // Empty extras returns early before the object check, so non-object bodies are fine.
         let mut body = serde_json::json!([1, 2, 3]);
-        merge_extra_into_json(&mut body, &[]);
+        merge_extra_into_json(&mut body, &[]).unwrap();
         assert_eq!(body, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn merge_extra_rejects_non_object() {
+        let mut body = serde_json::json!([1, 2, 3]);
+        assert_eq!(
+            merge_extra_into_json(&mut body, &[("key", "val")]).unwrap_err(),
+            "--extra requires a JSON object body"
+        );
+        assert_eq!(body, serde_json::json!([1, 2, 3])); // unchanged
+
+        for val in [
+            serde_json::json!(null),
+            serde_json::json!("str"),
+            serde_json::json!(42),
+            serde_json::json!(true),
+        ] {
+            let mut body = val.clone();
+            assert!(merge_extra_into_json(&mut body, &[("k", "v")]).is_err());
+        }
     }
 
     #[test]
     fn merge_extra_auto_detects_types() {
         let mut body = serde_json::json!({});
-        merge_extra_into_json(&mut body, &[("n", "42"), ("b", "true"), ("s", "hello")]);
+        merge_extra_into_json(&mut body, &[("n", "42"), ("b", "true"), ("s", "hello")]).unwrap();
         assert_eq!(body["n"], 42);
         assert_eq!(body["b"], true);
         assert_eq!(body["s"], "hello");
@@ -624,7 +645,7 @@ mod tests {
     #[test]
     fn merge_extra_duplicate_last_wins() {
         let mut body = serde_json::json!({"q": "test"});
-        merge_extra_into_json(&mut body, &[("k", "1"), ("k", "2")]);
+        merge_extra_into_json(&mut body, &[("k", "1"), ("k", "2")]).unwrap();
         assert_eq!(body["k"], 2);
     }
 
