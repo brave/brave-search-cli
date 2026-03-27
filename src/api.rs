@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn auto_detect_floats() {
         assert_eq!(auto_detect_json_type("1.5"), serde_json::json!(1.5));
-        assert_eq!(auto_detect_json_type("-3.14"), serde_json::json!(-3.14));
+        assert_eq!(auto_detect_json_type("-3.15"), serde_json::json!(-3.15));
         assert_eq!(auto_detect_json_type("0.0"), serde_json::json!(0.0));
         assert_eq!(auto_detect_json_type("1e5"), serde_json::json!(1e5));
         // Version-like strings naturally fail f64::parse
