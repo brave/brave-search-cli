@@ -254,20 +254,22 @@ Settings are resolved in priority order: CLI flag > environment variable > confi
 | Timeout | `--timeout` | — | `timeout` | `30` |
 
 **Config file** (`bx config path` to see location):
-- Linux: `~/.config/brave-search/config.toml`
-- macOS: `~/Library/Application Support/brave-search/config.toml`
-- Windows: `%APPDATA%\brave-search\config.toml`
+- Linux: `~/.config/brave-search/config.json`
+- macOS: `~/Library/Application Support/brave-search/config.json`
+- Windows: `%APPDATA%\brave-search\config.json`
 
-```toml
-api_key = "BSA..."
-base_url = "https://api.search.brave.com"
-timeout = 30
+```json
+{
+  "api_key": "BSA...",
+  "base_url": "https://api.search.brave.com",
+  "timeout": 30
+}
 ```
 
 Use `--config <path>` to load a different config file (e.g. one for dev, one for prod):
 
 ```bash
-bx --config ~/.config/brave-search/dev.toml web "test"
+bx --config ~/.config/brave-search/dev.json web "test"
 ```
 
 **Security tip:** Prefer the env var or config file over `--api-key`, which is visible in process listings. Use `bx config set-key` without an argument to enter the key interactively, avoiding shell history.

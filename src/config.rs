@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
 }
 
@@ -20,9 +23,9 @@ fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("brave-search"))
 }
 
-/// Returns the path to the TOML config file.
+/// Returns the path to the JSON config file.
 fn config_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("config.toml"))
+    config_dir().map(|d| d.join("config.json"))
 }
 
 /// Returns the resolved config file path (override or default).
@@ -37,8 +40,8 @@ fn legacy_key_path() -> Option<PathBuf> {
 
 // ── Load / save ──────────────────────────────────────────────────────
 
-/// Loads the TOML config file. Returns `Config::default()` if the default path
-/// is missing. Hard-exits if an explicit `--config` override cannot be read.
+/// Loads the JSON config file. Returns `Config::default()` if the default path
+/// is missing. Returns an error if an explicit `--config` path is missing or unreadable.
 pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
     let is_explicit = override_path.is_some();
     let path = match resolve_config_path(override_path) {
@@ -47,17 +50,28 @@ pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
     };
 
     match fs::read_to_string(&path) {
-        Ok(contents) => match toml::from_str::<Config>(&contents) {
-            Ok(cfg) => Ok(cfg),
-            Err(e) => {
-                if is_explicit {
-                    return Err(format!("failed to parse {}: {e}", path.display()));
+        Ok(contents) => {
+            if contents.trim().is_empty() {
+                return Ok(Config::default());
+            }
+            match serde_json::from_str::<Config>(&contents) {
+                Ok(cfg) => Ok(cfg),
+                Err(e) => {
+                    if is_explicit {
+                        return Err(format!("failed to parse {}: {e}", path.display()));
+                    }
+                    eprintln!("warning: failed to parse {}: {e}", path.display());
+                    Ok(Config::default())
                 }
-                eprintln!("warning: failed to parse {}: {e}", path.display());
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if is_explicit {
+                Err(format!("config file not found: {}", path.display()))
+            } else {
                 Ok(Config::default())
             }
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
+        }
         Err(e) => {
             if is_explicit {
                 return Err(format!("cannot read {}: {e}", path.display()));
@@ -82,7 +96,7 @@ pub fn save_config(config: &Config, override_path: Option<&Path>) -> io::Result<
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
 
-    let contents = toml::to_string_pretty(config).map_err(io::Error::other)?;
+    let contents = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
 
     #[cfg(unix)]
     {
@@ -126,6 +140,22 @@ pub fn load_legacy_api_key() -> Option<String> {
     fs::read_to_string(path).ok().and_then(trim_non_empty)
 }
 
+/// Best-effort removal of a file; logs to stderr on success or non-trivial failure.
+fn try_remove_file(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => eprintln!("note: removed legacy {}", path.display()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("warning: could not remove {}: {e}", path.display()),
+    }
+}
+
+/// Removes the legacy bare `api_key` file, if it exists.
+pub fn remove_legacy_key_file() {
+    if let Some(p) = legacy_key_path() {
+        try_remove_file(&p);
+    }
+}
+
 /// Validates that an API key looks reasonable before saving.
 fn validate_api_key(key: &str) -> io::Result<()> {
     if key.len() < 8 {
@@ -141,11 +171,11 @@ fn validate_api_key(key: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Saves the API key into the TOML config file (read-modify-write).
+/// Saves the API key into the JSON config file (read-modify-write).
 pub fn save_api_key(key: &str, config_path: Option<&Path>) -> io::Result<()> {
     let trimmed = key.trim();
     validate_api_key(trimmed)?;
-    let mut config = load_config(config_path).map_err(io::Error::other)?;
+    let mut config = load_config(config_path).unwrap_or_default();
     config.api_key = Some(trimmed.to_string());
     save_config(&config, config_path)
 }
@@ -223,6 +253,7 @@ pub fn onboard(config_path: Option<&Path>) -> Result<String, String> {
     let key = read_key_line()?;
 
     save_api_key(&key, config_path).map_err(|e| format!("failed to save API key: {e}"))?;
+    remove_legacy_key_file();
     let path = resolve_config_path(config_path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -257,6 +288,7 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
             };
             match save_api_key(&resolved, config_path) {
                 Ok(()) => {
+                    remove_legacy_key_file();
                     let path = resolve_config_path(config_path)
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
@@ -290,24 +322,16 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
                     std::process::exit(1);
                 }
             };
-            let has_any =
-                config.api_key.is_some() || config.base_url.is_some() || config.timeout.is_some();
-            if !has_any {
-                // Fall back to legacy key for display
-                if let Some(key) = load_legacy_api_key() {
-                    println!("api_key = {}", mask_key(&key));
-                    return;
-                }
+            let api_key = config
+                .api_key
+                .and_then(|k| if k.trim().is_empty() { None } else { Some(k) })
+                .or_else(load_legacy_api_key);
+            if api_key.is_none() && config.base_url.is_none() && config.timeout.is_none() {
                 eprintln!("(no configuration found)");
                 return;
             }
-            if let Some(ref key) = config.api_key {
-                let display = if key.trim().is_empty() {
-                    "(empty)".into()
-                } else {
-                    mask_key(key)
-                };
-                println!("api_key = {display}");
+            if let Some(ref key) = api_key {
+                println!("api_key = {}", mask_key(key));
             }
             if let Some(ref url) = config.base_url {
                 println!("base_url = {url}");
@@ -328,8 +352,8 @@ mod tests {
     // ── Config deserialization ──
 
     #[test]
-    fn parse_empty_string() {
-        let c: Config = toml::from_str("").unwrap();
+    fn parse_empty_object() {
+        let c: Config = serde_json::from_str("{}").unwrap();
         assert!(c.api_key.is_none());
         assert!(c.base_url.is_none());
         assert!(c.timeout.is_none());
@@ -337,9 +361,10 @@ mod tests {
 
     #[test]
     fn parse_full_config() {
-        let c: Config =
-            toml::from_str("api_key = \"BSAtest\"\nbase_url = \"https://x.com\"\ntimeout = 60\n")
-                .unwrap();
+        let c: Config = serde_json::from_str(
+            r#"{"api_key":"BSAtest","base_url":"https://x.com","timeout":60}"#,
+        )
+        .unwrap();
         assert_eq!(c.api_key.as_deref(), Some("BSAtest"));
         assert_eq!(c.base_url.as_deref(), Some("https://x.com"));
         assert_eq!(c.timeout, Some(60));
@@ -347,7 +372,7 @@ mod tests {
 
     #[test]
     fn parse_partial_config() {
-        let c: Config = toml::from_str("timeout = 10\n").unwrap();
+        let c: Config = serde_json::from_str(r#"{"timeout":10}"#).unwrap();
         assert!(c.api_key.is_none());
         assert!(c.base_url.is_none());
         assert_eq!(c.timeout, Some(10));
@@ -355,93 +380,91 @@ mod tests {
 
     #[test]
     fn parse_unknown_keys_rejected() {
-        assert!(toml::from_str::<Config>("api_key = \"k\"\nfuture_field = true\n").is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"api_key":"k","future_field":true}"#).is_err());
     }
 
     #[test]
     fn parse_wrong_type_errors() {
-        assert!(toml::from_str::<Config>("timeout = \"abc\"").is_err());
-        assert!(toml::from_str::<Config>("timeout = 3.14").is_err());
-        assert!(toml::from_str::<Config>("api_key = true").is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":"abc"}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":3.14}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"api_key":true}"#).is_err());
     }
 
     #[test]
-    fn parse_invalid_toml_syntax() {
-        assert!(toml::from_str::<Config>("timeout = ").is_err());
-        assert!(toml::from_str::<Config>("[[[bad").is_err());
-    }
-
-    #[test]
-    fn parse_comments_ignored() {
-        let c: Config = toml::from_str("# comment\ntimeout = 5\n").unwrap();
-        assert_eq!(c.timeout, Some(5));
+    fn parse_invalid_json() {
+        assert!(serde_json::from_str::<Config>("{invalid").is_err());
+        assert!(serde_json::from_str::<Config>("").is_err());
     }
 
     #[test]
     fn parse_empty_string_value() {
-        let c: Config = toml::from_str("api_key = \"\"\n").unwrap();
+        let c: Config = serde_json::from_str(r#"{"api_key":""}"#).unwrap();
         assert_eq!(c.api_key.as_deref(), Some(""));
     }
 
     #[test]
-    fn parse_whitespace_only_file() {
-        let c: Config = toml::from_str("  \n  \n").unwrap();
-        assert!(c.timeout.is_none());
+    fn parse_null_values_treated_as_none() {
+        let c: Config = serde_json::from_str(r#"{"api_key":null}"#).unwrap();
+        assert!(c.api_key.is_none());
+    }
+
+    #[test]
+    fn parse_json_trailing_comma_rejected() {
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":10,}"#).is_err());
     }
 
     #[test]
     fn parse_timeout_zero() {
-        let c: Config = toml::from_str("timeout = 0\n").unwrap();
+        let c: Config = serde_json::from_str(r#"{"timeout":0}"#).unwrap();
         assert_eq!(c.timeout, Some(0));
     }
 
     #[test]
     fn parse_timeout_i64_max() {
-        let c: Config = toml::from_str("timeout = 9223372036854775807\n").unwrap();
+        let c: Config = serde_json::from_str(r#"{"timeout":9223372036854775807}"#).unwrap();
         assert_eq!(c.timeout, Some(i64::MAX as u64));
     }
 
     #[test]
     fn parse_timeout_negative_errors() {
-        assert!(toml::from_str::<Config>("timeout = -1").is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":-1}"#).is_err());
     }
 
     #[test]
     fn parse_timeout_above_i64_max() {
-        // toml 1.1 accepts u64 values above i64::MAX for unsigned fields
-        let c: Config = toml::from_str("timeout = 9223372036854775808\n").unwrap();
+        let c: Config = serde_json::from_str(r#"{"timeout":9223372036854775808}"#).unwrap();
         assert_eq!(c.timeout, Some(9223372036854775808));
     }
 
     #[test]
     fn parse_timeout_above_u64_max_errors() {
-        assert!(toml::from_str::<Config>("timeout = 18446744073709551616").is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":18446744073709551616}"#).is_err());
     }
 
     #[test]
     fn parse_windows_line_endings() {
-        let c: Config = toml::from_str("timeout = 5\r\napi_key = \"k\"\r\n").unwrap();
+        let c: Config = serde_json::from_str("{\"timeout\":5,\r\n\"api_key\":\"k\"\r\n}").unwrap();
         assert_eq!(c.timeout, Some(5));
         assert_eq!(c.api_key.as_deref(), Some("k"));
     }
 
     #[test]
     fn parse_unicode_values() {
-        let c: Config = toml::from_str("base_url = \"https://例え.jp/api\"\n").unwrap();
+        let c: Config = serde_json::from_str(r#"{"base_url":"https://例え.jp/api"}"#).unwrap();
         assert_eq!(c.base_url.as_deref(), Some("https://例え.jp/api"));
     }
 
     #[test]
-    fn parse_unknown_section_rejected() {
-        assert!(toml::from_str::<Config>("timeout = 5\n[unknown]\nfoo = 1\n").is_err());
+    fn parse_nested_object_rejected() {
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":5,"nested":{"foo":1}}"#).is_err());
     }
 
     // ── Config serialization ──
 
     #[test]
-    fn serialize_all_none_is_empty() {
-        let s = toml::to_string_pretty(&Config::default()).unwrap();
-        assert_eq!(s, "");
+    fn serialize_all_none_is_empty_object() {
+        let s = serde_json::to_string_pretty(&Config::default()).unwrap();
+        assert_eq!(s, "{}");
     }
 
     #[test]
@@ -451,8 +474,8 @@ mod tests {
             base_url: Some("https://x.com".into()),
             timeout: Some(45),
         };
-        let s = toml::to_string_pretty(&c).unwrap();
-        let c2: Config = toml::from_str(&s).unwrap();
+        let s = serde_json::to_string_pretty(&c).unwrap();
+        let c2: Config = serde_json::from_str(&s).unwrap();
         assert_eq!(c2.api_key.as_deref(), Some("testkey123"));
         assert_eq!(c2.base_url.as_deref(), Some("https://x.com"));
         assert_eq!(c2.timeout, Some(45));
@@ -464,10 +487,10 @@ mod tests {
             timeout: Some(10),
             ..Default::default()
         };
-        let s = toml::to_string_pretty(&c).unwrap();
+        let s = serde_json::to_string_pretty(&c).unwrap();
         assert!(!s.contains("api_key"));
         assert!(!s.contains("base_url"));
-        assert!(s.contains("timeout = 10"));
+        assert!(s.contains("\"timeout\": 10"));
     }
 
     #[test]
@@ -476,8 +499,8 @@ mod tests {
             api_key: Some(String::new()),
             ..Default::default()
         };
-        let s = toml::to_string_pretty(&c).unwrap();
-        assert!(s.contains("api_key = \"\""));
+        let s = serde_json::to_string_pretty(&c).unwrap();
+        assert!(s.contains("\"api_key\": \"\""));
     }
 
     // ── load_config ──
@@ -485,8 +508,8 @@ mod tests {
     #[test]
     fn load_config_override_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("test.toml");
-        fs::write(&p, "timeout = 99\n").unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#"{"timeout":99}"#).unwrap();
         let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.timeout, Some(99));
     }
@@ -494,10 +517,20 @@ mod tests {
     #[test]
     fn load_config_override_empty_file() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("test.toml");
+        let p = dir.path().join("config.json");
         fs::write(&p, "").unwrap();
         let c = load_config(Some(p.as_path())).unwrap();
         assert!(c.api_key.is_none());
+    }
+
+    #[test]
+    fn load_config_whitespace_only_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, "  \n  \n").unwrap();
+        let c = load_config(Some(p.as_path())).unwrap();
+        assert!(c.api_key.is_none());
+        assert!(c.timeout.is_none());
     }
 
     #[test]
@@ -506,18 +539,17 @@ mod tests {
     }
 
     #[test]
-    fn load_config_override_invalid_toml_returns_err() {
+    fn load_config_override_invalid_json_returns_err() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("bad.toml");
-        fs::write(&p, "[[[invalid").unwrap();
+        let p = dir.path().join("bad.json");
+        fs::write(&p, "{invalid").unwrap();
         assert!(load_config(Some(p.as_path())).is_err());
     }
 
     #[test]
-    fn load_config_override_missing_file_returns_default() {
-        let p = Path::new("/nonexistent/path/config.toml");
-        let c = load_config(Some(p)).unwrap();
-        assert!(c.api_key.is_none());
+    fn load_config_override_missing_file_returns_err() {
+        let p = Path::new("/nonexistent/path/config.json");
+        assert!(load_config(Some(p)).is_err());
     }
 
     // ── save_config + round trip ──
@@ -525,7 +557,7 @@ mod tests {
     #[test]
     fn save_and_load_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         let c = Config {
             api_key: Some("mykey12345".into()),
             base_url: None,
@@ -541,7 +573,7 @@ mod tests {
     #[test]
     fn save_config_creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("sub").join("dir").join("config.toml");
+        let p = dir.path().join("sub").join("dir").join("config.json");
         let c = Config {
             timeout: Some(1),
             ..Default::default()
@@ -555,8 +587,8 @@ mod tests {
     #[test]
     fn save_api_key_preserves_other_fields() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        fs::write(&p, "base_url = \"https://x.com\"\ntimeout = 20\n").unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#"{"base_url":"https://x.com","timeout":20}"#).unwrap();
         save_api_key("newkey12345", Some(p.as_path())).unwrap();
         let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.api_key.as_deref(), Some("newkey12345"));
@@ -565,30 +597,42 @@ mod tests {
     }
 
     #[test]
+    fn save_api_key_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        assert!(!p.exists());
+        save_api_key("newkey12345", Some(p.as_path())).unwrap();
+        let c = load_config(Some(p.as_path())).unwrap();
+        assert_eq!(c.api_key.as_deref(), Some("newkey12345"));
+        assert!(c.base_url.is_none());
+        assert!(c.timeout.is_none());
+    }
+
+    #[test]
     fn save_api_key_validates_too_short() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         assert!(save_api_key("abc", Some(p.as_path())).is_err());
     }
 
     #[test]
     fn save_api_key_validates_whitespace() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         assert!(save_api_key("abc def ghi", Some(p.as_path())).is_err());
     }
 
     #[test]
     fn save_api_key_validates_control_chars() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         assert!(save_api_key("abcdef\tgh", Some(p.as_path())).is_err());
     }
 
     #[test]
     fn save_api_key_trims_whitespace() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         save_api_key("  testkey12345  ", Some(p.as_path())).unwrap();
         let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.api_key.as_deref(), Some("testkey12345"));
@@ -597,7 +641,7 @@ mod tests {
     #[test]
     fn save_api_key_exactly_8_chars() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         save_api_key("12345678", Some(p.as_path())).unwrap();
         let c = load_config(Some(p.as_path())).unwrap();
         assert_eq!(c.api_key.as_deref(), Some("12345678"));
@@ -662,21 +706,21 @@ mod tests {
     #[test]
     fn save_api_key_exactly_7_chars_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         assert!(save_api_key("1234567", Some(p.as_path())).is_err());
     }
 
     #[test]
     fn save_api_key_validates_newline() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         assert!(save_api_key("abcdef\ngh", Some(p.as_path())).is_err());
     }
 
     #[test]
     fn save_api_key_validates_null() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         assert!(save_api_key("abcdef\0gh", Some(p.as_path())).is_err());
     }
 
@@ -687,7 +731,7 @@ mod tests {
     fn save_config_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         let c = Config {
             timeout: Some(1),
             ..Default::default()
@@ -703,11 +747,30 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("sub");
-        let p = sub.join("config.toml");
+        let p = sub.join("config.json");
         let c = Config::default();
         save_config(&c, Some(p.as_path())).unwrap();
         let mode = fs::metadata(&sub).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    // ── try_remove_file ──
+
+    #[test]
+    fn try_remove_file_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("legacy_key");
+        fs::write(&p, "test").unwrap();
+        assert!(p.exists());
+        try_remove_file(&p);
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn try_remove_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("nonexistent");
+        try_remove_file(&p); // should not panic
     }
 
     // ── trim_non_empty ──
@@ -747,8 +810,8 @@ mod tests {
     #[test]
     fn load_api_key_for_display_from_config() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        fs::write(&p, "api_key = \"testkey12345\"\n").unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#"{"api_key":"testkey12345"}"#).unwrap();
         let key = load_api_key_for_display(Some(p.as_path()));
         assert_eq!(key.as_deref(), Some("testkey12345"));
     }
@@ -756,23 +819,20 @@ mod tests {
     #[test]
     fn load_api_key_for_display_empty_config() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
+        let p = dir.path().join("config.json");
         fs::write(&p, "").unwrap();
-        // Verify the config itself has no key
         assert!(load_config(Some(p.as_path())).unwrap().api_key.is_none());
     }
 
     #[test]
     fn load_api_key_for_display_whitespace_key() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        fs::write(&p, "api_key = \"   \"\n").unwrap();
-        // Whitespace-only key should be filtered out by trim_non_empty
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#"{"api_key":"   "}"#).unwrap();
         let config = load_config(Some(p.as_path())).unwrap();
         assert_eq!(config.api_key.as_deref(), Some("   "));
-        // But display should filter it
+        // Display should filter out whitespace-only keys
         let key = load_api_key_for_display(Some(p.as_path()));
-        // Either None (no legacy) or a legacy key — not the whitespace one
         if let Some(ref k) = key {
             assert!(
                 !k.trim().is_empty(),
@@ -784,9 +844,9 @@ mod tests {
     // ── config_path ──
 
     #[test]
-    fn config_path_ends_with_config_toml() {
+    fn config_path_ends_with_config_json() {
         if let Some(p) = config_path() {
-            assert!(p.ends_with("config.toml"));
+            assert!(p.ends_with("config.json"));
             assert!(p.parent().unwrap().ends_with("brave-search"));
         }
     }

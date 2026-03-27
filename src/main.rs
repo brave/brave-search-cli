@@ -218,9 +218,9 @@ enum Command {
 
     /// Manage configuration — set-key, show-key, show, path
     ///
-    /// Config file: ~/.config/brave-search/config.toml (Linux),
-    /// ~/Library/Application Support/brave-search/config.toml (macOS),
-    /// %APPDATA%\brave-search\config.toml (Windows).
+    /// Config file: ~/.config/brave-search/config.json (Linux),
+    /// ~/Library/Application Support/brave-search/config.json (macOS),
+    /// %APPDATA%\brave-search\config.json (Windows).
     ///
     /// Examples:
     ///   bx config set-key <KEY>
