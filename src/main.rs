@@ -1261,22 +1261,16 @@ fn cmd_web(
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
-        ("count", a.count.map(serde_json::Value::from)),
-        ("offset", a.offset.map(serde_json::Value::from)),
+        ("count", a.count.map(Into::into)),
+        ("offset", a.offset.map(Into::into)),
         ("safesearch", a.safesearch.map(Into::into)),
         ("freshness", a.freshness.map(Into::into)),
-        (
-            "text_decorations",
-            a.text_decorations.map(serde_json::Value::from),
-        ),
-        ("spellcheck", a.spellcheck.map(serde_json::Value::from)),
+        ("text_decorations", a.text_decorations.map(Into::into)),
+        ("spellcheck", a.spellcheck.map(Into::into)),
         ("goggles", goggles_resolved.map(Into::into)),
-        (
-            "extra_snippets",
-            a.extra_snippets.map(serde_json::Value::from),
-        ),
+        ("extra_snippets", a.extra_snippets.map(Into::into)),
         ("units", a.units.map(Into::into)),
-        ("operators", a.operators.map(serde_json::Value::from)),
+        ("operators", a.operators.map(Into::into)),
     ]);
     body["q"] = a.q.into();
     // POST body requires result_filter as a JSON array, not a comma-separated string.
@@ -1349,12 +1343,12 @@ fn cmd_videos(
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
-        ("count", a.count.map(serde_json::Value::from)),
-        ("offset", a.offset.map(serde_json::Value::from)),
+        ("count", a.count.map(Into::into)),
+        ("offset", a.offset.map(Into::into)),
         ("safesearch", a.safesearch.map(Into::into)),
         ("freshness", a.freshness.map(Into::into)),
-        ("spellcheck", a.spellcheck.map(serde_json::Value::from)),
-        ("operators", a.operators.map(serde_json::Value::from)),
+        ("spellcheck", a.spellcheck.map(Into::into)),
+        ("operators", a.operators.map(Into::into)),
     ]);
     body["q"] = a.q.into();
     if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
@@ -1384,17 +1378,14 @@ fn cmd_news(
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
-        ("count", a.count.map(serde_json::Value::from)),
-        ("offset", a.offset.map(serde_json::Value::from)),
+        ("count", a.count.map(Into::into)),
+        ("offset", a.offset.map(Into::into)),
         ("safesearch", a.safesearch.map(Into::into)),
         ("freshness", a.freshness.map(Into::into)),
-        ("spellcheck", a.spellcheck.map(serde_json::Value::from)),
-        (
-            "extra_snippets",
-            a.extra_snippets.map(serde_json::Value::from),
-        ),
+        ("spellcheck", a.spellcheck.map(Into::into)),
+        ("extra_snippets", a.extra_snippets.map(Into::into)),
         ("goggles", goggles_resolved.map(Into::into)),
-        ("operators", a.operators.map(serde_json::Value::from)),
+        ("operators", a.operators.map(Into::into)),
     ]);
     body["q"] = a.q.into();
     if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
@@ -1501,17 +1492,15 @@ fn cmd_answers(
     });
 
     let obj = body.as_object_mut().expect("body must be a JSON object");
-    if let Some(v) = a.model {
-        obj.insert("model".into(), v.into());
-    }
-    if let Some(v) = a.country {
-        obj.insert("country".into(), v.into());
-    }
-    if let Some(v) = a.language {
-        obj.insert("language".into(), v.into());
-    }
-    if let Some(v) = a.safesearch {
-        obj.insert("safesearch".into(), v.into());
+    for (key, val) in [
+        ("model", a.model),
+        ("country", a.country),
+        ("language", a.language),
+        ("safesearch", a.safesearch),
+    ] {
+        if let Some(v) = val {
+            obj.insert(key.into(), v.into());
+        }
     }
 
     if let Some(max) = a.max_completion_tokens {
@@ -1608,35 +1597,33 @@ fn cmd_context(
     let mut body = api::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
-        ("count", a.count.map(serde_json::Value::from)),
+        ("count", a.count.map(Into::into)),
         (
             "maximum_number_of_urls",
-            a.maximum_number_of_urls.map(serde_json::Value::from),
+            a.maximum_number_of_urls.map(Into::into),
         ),
         (
             "maximum_number_of_tokens",
-            a.maximum_number_of_tokens.map(serde_json::Value::from),
+            a.maximum_number_of_tokens.map(Into::into),
         ),
         (
             "maximum_number_of_snippets",
-            a.maximum_number_of_snippets.map(serde_json::Value::from),
+            a.maximum_number_of_snippets.map(Into::into),
         ),
         (
             "maximum_number_of_tokens_per_url",
-            a.maximum_number_of_tokens_per_url
-                .map(serde_json::Value::from),
+            a.maximum_number_of_tokens_per_url.map(Into::into),
         ),
         (
             "maximum_number_of_snippets_per_url",
-            a.maximum_number_of_snippets_per_url
-                .map(serde_json::Value::from),
+            a.maximum_number_of_snippets_per_url.map(Into::into),
         ),
         (
             "context_threshold_mode",
             a.context_threshold_mode.map(Into::into),
         ),
         ("goggles", goggles_resolved.map(Into::into)),
-        ("enable_local", a.enable_local.map(serde_json::Value::from)),
+        ("enable_local", a.enable_local.map(Into::into)),
     ]);
     body["q"] = a.q.into();
     if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
@@ -1738,8 +1725,7 @@ fn cmd_descriptions(
         eprintln!("error: at least one POI ID is required");
         std::process::exit(1);
     }
-    let params: &[(&str, Option<&str>)] = &[];
-    let qs = api::build_query_repeated(params, &[("ids", &a.ids)], extras);
+    let qs = api::build_query_repeated(&[], &[("ids", &a.ids)], extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/descriptions"));
     api::get(base, &path, key, timeout);
 }

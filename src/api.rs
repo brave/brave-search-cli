@@ -45,28 +45,7 @@ fn read_line_bounded<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> io::Resul
 /// Builds a query string from key-value pairs, skipping None values.
 /// Values are URL-encoded. Extras override params with the same key.
 pub fn build_query(params: &[(&str, Option<&str>)], extras: &[(&str, &str)]) -> String {
-    let mut parts = Vec::new();
-    for &(key, val) in params {
-        if let Some(v) = val {
-            if let Some(&(_, ev)) = extras.iter().find(|(k, _)| *k == key) {
-                eprintln!("warning: --extra '{key}={ev}' overrides existing parameter");
-                continue;
-            }
-            parts.push(format!("{}={}", key, urlencoding::encode(v)));
-        }
-    }
-    for &(key, val) in extras {
-        parts.push(format!(
-            "{}={}",
-            urlencoding::encode(key),
-            urlencoding::encode(val)
-        ));
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", parts.join("&"))
-    }
+    build_query_repeated(params, &[], extras)
 }
 
 /// Infers a JSON type from a string value:
@@ -75,13 +54,7 @@ fn auto_detect_json_type(v: &str) -> serde_json::Value {
     if let Ok(n) = v.parse::<i64>() {
         n.into()
     } else if let Ok(f) = v.parse::<f64>() {
-        if f.is_finite() {
-            serde_json::Number::from_f64(f)
-                .map(serde_json::Value::Number)
-                .unwrap_or_else(|| v.into())
-        } else {
-            v.into()
-        }
+        serde_json::Number::from_f64(f).map_or_else(|| v.into(), serde_json::Value::Number)
     } else if v == "true" {
         true.into()
     } else if v == "false" {
@@ -140,7 +113,8 @@ pub fn build_query_repeated(
         }
     }
     for &(key, vals) in repeated {
-        if extras.iter().any(|(k, _)| *k == key) {
+        if let Some(&(_, ev)) = extras.iter().find(|(k, _)| *k == key) {
+            eprintln!("warning: --extra '{key}={ev}' overrides existing parameter");
             continue;
         }
         for v in vals {
