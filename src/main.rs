@@ -60,6 +60,7 @@ struct Cli {
 
     /// Extra API parameters (KEY=VALUE, repeatable). Merged into request body
     /// (POST) or query string (GET). Warns on collision with existing flags.
+    /// POST values are auto-typed: integers, floats, true/false → JSON natives.
     #[arg(long, global = true, value_name = "KEY=VALUE")]
     extra: Vec<String>,
 
@@ -895,6 +896,19 @@ fn parse_extra(extras: &[String]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// Merges --extra pairs into a JSON body, exiting on error.
+fn merge_extras(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
+    if let Err(msg) = api::merge_extra_into_json(body, extras) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
+}
+
+/// Converts a bool to a static string for GET query parameters.
+fn bool_str(v: bool) -> &'static str {
+    if v { "true" } else { "false" }
+}
+
 const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_TIMEOUT: u64 = 30;
 
@@ -1281,10 +1295,7 @@ fn cmd_web(
             .collect();
         body["result_filter"] = serde_json::Value::Array(arr);
     }
-    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
-        eprintln!("error: {msg}");
-        std::process::exit(1);
-    }
+    merge_extras(&mut body, extras);
     let loc = LocationHeaders {
         lat: a.lat,
         long: a.long,
@@ -1321,10 +1332,7 @@ fn cmd_images(
         ("search_lang", a.search_lang.as_deref()),
         ("count", count_str.as_deref()),
         ("safesearch", a.safesearch.as_deref()),
-        (
-            "spellcheck",
-            a.spellcheck.map(|v| if v { "true" } else { "false" }),
-        ),
+        ("spellcheck", a.spellcheck.map(bool_str)),
     ];
     let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/images/search"));
@@ -1351,10 +1359,7 @@ fn cmd_videos(
         ("operators", a.operators.map(Into::into)),
     ]);
     body["q"] = a.q.into();
-    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
-        eprintln!("error: {msg}");
-        std::process::exit(1);
-    }
+    merge_extras(&mut body, extras);
     api::post_json(
         base,
         ep.unwrap_or("/res/v1/videos/search"),
@@ -1388,10 +1393,7 @@ fn cmd_news(
         ("operators", a.operators.map(Into::into)),
     ]);
     body["q"] = a.q.into();
-    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
-        eprintln!("error: {msg}");
-        std::process::exit(1);
-    }
+    merge_extras(&mut body, extras);
     api::post_json(
         base,
         ep.unwrap_or("/res/v1/news/search"),
@@ -1416,7 +1418,7 @@ fn cmd_suggest(
         ("lang", a.lang.as_deref()),
         ("country", a.country.as_deref()),
         ("count", count_str.as_deref()),
-        ("rich", a.rich.map(|v| if v { "true" } else { "false" })),
+        ("rich", a.rich.map(bool_str)),
     ];
     let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/suggest/search"));
@@ -1470,10 +1472,7 @@ fn cmd_answers(
                 std::process::exit(1);
             }
         };
-        if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
-            eprintln!("error: {msg}");
-            std::process::exit(1);
-        }
+        merge_extras(&mut body, extras);
 
         let is_stream = body["stream"].as_bool().unwrap_or(true);
         if is_stream {
@@ -1573,10 +1572,7 @@ fn cmd_answers(
         obj.insert("web_search_options".into(), wso.into());
     }
 
-    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
-        eprintln!("error: {msg}");
-        std::process::exit(1);
-    }
+    merge_extras(&mut body, extras);
 
     if stream {
         api::post_json_stream(base, path, key, &body, &[], timeout);
@@ -1626,10 +1622,7 @@ fn cmd_context(
         ("enable_local", a.enable_local.map(Into::into)),
     ]);
     body["q"] = a.q.into();
-    if let Err(msg) = api::merge_extra_into_json(&mut body, extras) {
-        eprintln!("error: {msg}");
-        std::process::exit(1);
-    }
+    merge_extras(&mut body, extras);
     let loc = LocationHeaders {
         lat: a.lat,
         long: a.long,
@@ -1672,10 +1665,7 @@ fn cmd_places(
         ("ui_lang", a.ui_lang.as_deref()),
         ("units", a.units.as_deref()),
         ("safesearch", a.safesearch.as_deref()),
-        (
-            "spellcheck",
-            a.spellcheck.map(|v| if v { "true" } else { "false" }),
-        ),
+        ("spellcheck", a.spellcheck.map(bool_str)),
     ];
     let qs = api::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/place_search"));
@@ -1833,6 +1823,17 @@ mod tests {
     fn check_endpoint_rejects_consecutive_slashes() {
         assert!(check_endpoint("//evil.com").is_err());
         assert!(check_endpoint("/res//v1").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_single_dot_segment_allowed() {
+        assert!(check_endpoint("/res/./v1").is_ok()); // `.` is harmless (current dir)
+    }
+
+    #[test]
+    fn check_endpoint_rejects_empty_and_non_ascii() {
+        assert!(check_endpoint("").is_err()); // no leading `/`
+        assert!(check_endpoint("/res/caf\u{00e9}").is_err()); // non-ASCII byte rejected
     }
 
     #[test]

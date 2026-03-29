@@ -331,6 +331,28 @@ bx web "restaurants near me" --lat 37.7749 --long -122.4194 --city "San Francisc
 bx web "rust" --result-filter "web,discussions"
 ```
 
+## Extra Parameters and Custom Endpoints
+
+### `--extra KEY=VALUE`
+
+Pass additional API parameters not covered by named flags. Repeatable. Merged into the JSON body (POST endpoints) or query string (GET endpoints). Warns if the key collides with an existing flag.
+
+For POST endpoints, values are auto-typed: integers and floats become JSON numbers, `true`/`false` become JSON booleans, everything else stays a string. GET values are always strings.
+
+```bash
+bx web "rust" --extra custom_param=value
+bx web "rust" --extra count=5            # overrides --count (with warning)
+bx images "sunset" --extra safesearch=off
+```
+
+### `--endpoint PATH`
+
+Override the default API path. For internal or beta Brave endpoints. Must start with `/`.
+
+```bash
+bx web "test" --endpoint /res/v2/web/search
+```
+
 ## Answers Endpoint
 
 The `answers` command supports two modes:

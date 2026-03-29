@@ -730,6 +730,15 @@ mod tests {
     }
 
     #[test]
+    fn build_query_repeated_extras_override_repeated() {
+        let ids = vec!["a".into(), "b".into()];
+        assert_eq!(
+            build_query_repeated(&[], &[("ids", &ids)], &[("ids", "override")]),
+            "?ids=override"
+        );
+    }
+
+    #[test]
     fn build_query_repeated_only_repeated() {
         let ids = vec!["x".into(), "y".into(), "z".into()];
         assert_eq!(
