@@ -58,6 +58,16 @@ struct Cli {
     #[arg(long, global = true)]
     timeout: Option<u64>,
 
+    /// Extra API parameters (KEY=VALUE, repeatable). Merged into request body
+    /// (POST) or query string (GET). Warns on collision with existing flags.
+    /// POST values are auto-typed: integers, floats, true/false → JSON natives.
+    #[arg(long, global = true, value_name = "KEY=VALUE")]
+    extra: Vec<String>,
+
+    /// Override the API path (e.g. /res/v1/web/search). For internal/beta Brave endpoints.
+    #[arg(long, global = true)]
+    endpoint: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -285,40 +295,42 @@ struct WebArgs {
     q: String,
 
     /// Country code (e.g. US, GB, DE)
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Search language (e.g. en, fr, de)
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// UI language (e.g. en-US, fr-FR)
-    #[arg(long, default_value = "en-US")]
-    ui_lang: String,
+    #[arg(long)]
+    ui_lang: Option<String>,
 
     /// Number of results
-    #[arg(long, default_value_t = 20)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Result offset for pagination
     #[arg(long)]
     offset: Option<u16>,
 
     /// Safe search: off, moderate, strict
-    #[arg(long, default_value = "moderate", value_parser = ["off", "moderate", "strict"])]
-    safesearch: String,
+    #[arg(long, value_parser = ["off", "moderate", "strict"])]
+    safesearch: Option<String>,
 
     /// Freshness: pd (past day), pw (past week), pm (past month), py (past year), or YYYY-MM-DDtoYYYY-MM-DD
     #[arg(long)]
     freshness: Option<String>,
 
     /// Text decorations (bold markers in snippets) [omit: API default, --text-decorations: enable, --text-decorations false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    text_decorations: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    text_decorations: Option<bool>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 
     /// Comma-separated result types: discussions,faq,infobox,news,query,summarizer,videos,web,locations
     #[arg(long)]
@@ -328,8 +340,9 @@ struct WebArgs {
     goggles_args: GogglesArgs,
 
     /// Extra snippets from different parts of the page [omit: API default, --extra-snippets: enable, --extra-snippets false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    extra_snippets: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    extra_snippets: Option<bool>,
 
     /// Units: metric or imperial
     #[arg(long, value_parser = ["metric", "imperial"])]
@@ -338,8 +351,9 @@ struct WebArgs {
     /// Enable search operators in the query (site:, intitle:, etc.)
     /// Full list: https://search.brave.com/help/operators
     /// [omit: API default, --operators: enable, --operators false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    operators: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    operators: Option<bool>,
 
     /// Latitude for location-aware results
     #[arg(long, allow_hyphen_values = true)]
@@ -381,24 +395,25 @@ struct ImagesArgs {
     q: String,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Search language
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// Number of results
-    #[arg(long, default_value_t = 50)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Safe search: off or strict
-    #[arg(long, default_value = "strict", value_parser = ["off", "strict"])]
-    safesearch: String,
+    #[arg(long, value_parser = ["off", "strict"])]
+    safesearch: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -408,42 +423,44 @@ struct VideosArgs {
     q: String,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Search language
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// UI language
-    #[arg(long, default_value = "en-US")]
-    ui_lang: String,
+    #[arg(long)]
+    ui_lang: Option<String>,
 
     /// Number of results
-    #[arg(long, default_value_t = 20)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Result offset for pagination
     #[arg(long)]
     offset: Option<u16>,
 
     /// Safe search: off, moderate, strict
-    #[arg(long, default_value = "moderate", value_parser = ["off", "moderate", "strict"])]
-    safesearch: String,
+    #[arg(long, value_parser = ["off", "moderate", "strict"])]
+    safesearch: Option<String>,
 
     /// Freshness filter
     #[arg(long)]
     freshness: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 
     /// Enable search operators in the query (site:, intitle:, etc.)
     /// Full list: https://search.brave.com/help/operators
     /// [omit: API default, --operators: enable, --operators false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    operators: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    operators: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -453,40 +470,42 @@ struct NewsArgs {
     q: String,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Search language
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// UI language
-    #[arg(long, default_value = "en-US")]
-    ui_lang: String,
+    #[arg(long)]
+    ui_lang: Option<String>,
 
     /// Number of results
-    #[arg(long, default_value_t = 20)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Result offset for pagination
     #[arg(long)]
     offset: Option<u16>,
 
     /// Safe search: off, moderate, strict
-    #[arg(long, default_value = "strict", value_parser = ["off", "moderate", "strict"])]
-    safesearch: String,
+    #[arg(long, value_parser = ["off", "moderate", "strict"])]
+    safesearch: Option<String>,
 
     /// Freshness filter
     #[arg(long)]
     freshness: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 
     /// Extra snippets [omit: API default, --extra-snippets: enable, --extra-snippets false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    extra_snippets: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    extra_snippets: Option<bool>,
 
     #[command(flatten)]
     goggles_args: GogglesArgs,
@@ -494,8 +513,9 @@ struct NewsArgs {
     /// Enable search operators in the query (site:, intitle:, etc.)
     /// Full list: https://search.brave.com/help/operators
     /// [omit: API default, --operators: enable, --operators false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    operators: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    operators: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -505,20 +525,21 @@ struct SuggestArgs {
     q: String,
 
     /// Language
-    #[arg(long, default_value = "en")]
-    lang: String,
+    #[arg(long)]
+    lang: Option<String>,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Number of suggestions
-    #[arg(long, default_value_t = 5)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Rich suggestions [omit: API default, --rich: enable, --rich false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    rich: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    rich: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -528,12 +549,12 @@ struct SpellcheckArgs {
     q: String,
 
     /// Language
-    #[arg(long, default_value = "en")]
-    lang: String,
+    #[arg(long)]
+    lang: Option<String>,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 }
 
 #[derive(Parser)]
@@ -543,24 +564,24 @@ struct AnswersArgs {
     query: String,
 
     /// Model: brave-pro or brave
-    #[arg(long, default_value = "brave-pro", value_parser = ["brave-pro", "brave"])]
-    model: String,
+    #[arg(long, value_parser = ["brave-pro", "brave"])]
+    model: Option<String>,
 
     /// Disable streaming (default: stream enabled)
     #[arg(long)]
     no_stream: bool,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Language
-    #[arg(long, default_value = "en")]
-    language: String,
+    #[arg(long)]
+    language: Option<String>,
 
     /// Safe search: off, moderate, strict
-    #[arg(long, default_value = "moderate", value_parser = ["off", "moderate", "strict"])]
-    safesearch: String,
+    #[arg(long, value_parser = ["off", "moderate", "strict"])]
+    safesearch: Option<String>,
 
     /// Maximum completion tokens
     #[arg(long)]
@@ -630,36 +651,36 @@ struct ContextArgs {
     q: String,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Search language
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// Number of results
-    #[arg(long, default_value_t = 20)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Max URLs to include
     #[arg(long, visible_alias = "max-urls")]
-    maximum_number_of_urls: Option<String>,
+    maximum_number_of_urls: Option<u32>,
 
     /// Max total tokens
     #[arg(long, visible_alias = "max-tokens")]
-    maximum_number_of_tokens: Option<String>,
+    maximum_number_of_tokens: Option<u32>,
 
     /// Max snippets
     #[arg(long, visible_alias = "max-snippets")]
-    maximum_number_of_snippets: Option<String>,
+    maximum_number_of_snippets: Option<u32>,
 
     /// Max tokens per URL
     #[arg(long, visible_alias = "max-tokens-per-url")]
-    maximum_number_of_tokens_per_url: Option<String>,
+    maximum_number_of_tokens_per_url: Option<u32>,
 
     /// Max snippets per URL
     #[arg(long, visible_alias = "max-snippets-per-url")]
-    maximum_number_of_snippets_per_url: Option<String>,
+    maximum_number_of_snippets_per_url: Option<u32>,
 
     /// Threshold mode: strict, balanced, lenient
     #[arg(long, visible_alias = "threshold", value_parser = ["strict", "balanced", "lenient"])]
@@ -669,8 +690,9 @@ struct ContextArgs {
     goggles_args: GogglesArgs,
 
     /// Local results [omit: API default, --enable-local: enable, --enable-local false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    enable_local: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    enable_local: Option<bool>,
 
     /// Latitude for location-aware results
     #[arg(long, allow_hyphen_values = true)]
@@ -728,32 +750,33 @@ struct PlacesArgs {
     radius: Option<String>,
 
     /// Number of results
-    #[arg(long, default_value_t = 20)]
-    count: u16,
+    #[arg(long)]
+    count: Option<u16>,
 
     /// Country code
-    #[arg(long, default_value = "US")]
-    country: String,
+    #[arg(long)]
+    country: Option<String>,
 
     /// Search language
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// UI language
-    #[arg(long, default_value = "en-US")]
-    ui_lang: String,
+    #[arg(long)]
+    ui_lang: Option<String>,
 
     /// Units: metric or imperial
-    #[arg(long, default_value = "metric", value_parser = ["metric", "imperial"])]
-    units: String,
+    #[arg(long, value_parser = ["metric", "imperial"])]
+    units: Option<String>,
 
     /// Safe search
-    #[arg(long, default_value = "strict", value_parser = ["off", "moderate", "strict"])]
-    safesearch: String,
+    #[arg(long, value_parser = ["off", "moderate", "strict"])]
+    safesearch: Option<String>,
 
     /// Spellcheck [omit: API default, --spellcheck: enable, --spellcheck false: disable]
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-    spellcheck: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true",
+          value_parser = clap::builder::BoolishValueParser::new())]
+    spellcheck: Option<bool>,
 }
 
 #[derive(Parser)]
@@ -762,12 +785,12 @@ struct PoisArgs {
     ids: Vec<String>,
 
     /// Search language
-    #[arg(long, default_value = "en")]
-    search_lang: String,
+    #[arg(long)]
+    search_lang: Option<String>,
 
     /// UI language
-    #[arg(long, default_value = "en-US")]
-    ui_lang: String,
+    #[arg(long)]
+    ui_lang: Option<String>,
 
     /// Units: metric or imperial
     #[arg(long, value_parser = ["metric", "imperial"])]
@@ -818,7 +841,14 @@ fn inject_default_subcommand() -> Vec<String> {
 
 fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
     // Flags that consume the next argument as a value
-    const VALUE_FLAGS: &[&str] = &["--api-key", "--base-url", "--timeout", "--config"];
+    const VALUE_FLAGS: &[&str] = &[
+        "--api-key",
+        "--base-url",
+        "--timeout",
+        "--config",
+        "--extra",
+        "--endpoint",
+    ];
 
     let mut i = 1; // skip binary name
     while i < args.len() {
@@ -852,26 +882,35 @@ fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
     args // no positional found (e.g. `bx --help`)
 }
 
-const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
-const DEFAULT_TIMEOUT: u64 = 30;
+/// Parses --extra KEY=VALUE pairs. Returns borrowed slices into the input.
+fn parse_extra(extras: &[String]) -> Vec<(&str, &str)> {
+    extras
+        .iter()
+        .map(|entry| match entry.split_once('=') {
+            Some((k, v)) if !k.is_empty() => (k, v),
+            _ => {
+                eprintln!("error: --extra requires KEY=VALUE format, got: {entry}");
+                std::process::exit(1);
+            }
+        })
+        .collect()
+}
 
-/// Allowed base URLs for the Brave Search API.
-const ALLOWED_BASE_URLS: &[&str] = &[
-    "https://api.search.brave.com",
-    "https://api.search.brave.software",
-];
-
-fn validate_base_url(url: &str) {
-    let normalized = url.trim_end_matches('/');
-    if !ALLOWED_BASE_URLS.contains(&normalized) {
-        eprintln!(
-            "error: base URL not in allowlist (got: {url})\n\
-             hint: allowed URLs are {}",
-            ALLOWED_BASE_URLS.join(", ")
-        );
+/// Merges --extra pairs into a JSON body, exiting on error.
+fn merge_extras(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
+    if let Err(msg) = api::merge_extra_into_json(body, extras) {
+        eprintln!("error: {msg}");
         std::process::exit(1);
     }
 }
+
+/// Converts a bool to a static string for GET query parameters.
+fn bool_str(v: bool) -> &'static str {
+    if v { "true" } else { "false" }
+}
+
+const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
+const DEFAULT_TIMEOUT: u64 = 30;
 
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
@@ -901,20 +940,49 @@ fn main() {
         eprintln!("error: timeout must be greater than 0");
         std::process::exit(1);
     }
+    let extras = parse_extra(&cli.extra);
+    let ep = cli.endpoint.as_deref();
+
+    if let Some(ep) = ep {
+        if let Err(msg) = check_endpoint(ep) {
+            eprintln!("error: {msg}");
+            std::process::exit(1);
+        }
+    }
 
     match cli.command {
-        Command::Context(args) => cmd_context(&base, &api_key, args, timeout),
-        Command::Answers(args) => cmd_answers(&base, &api_key, args, timeout),
-        Command::Web(args) => cmd_web(&base, &api_key, args, timeout),
-        Command::News(args) => cmd_news(&base, &api_key, args, timeout),
-        Command::Images(args) => cmd_images(&base, &api_key, args, timeout),
-        Command::Videos(args) => cmd_videos(&base, &api_key, args, timeout),
-        Command::Places(args) => cmd_places(&base, &api_key, args, timeout),
-        Command::Suggest(args) => cmd_suggest(&base, &api_key, args, timeout),
-        Command::Spellcheck(args) => cmd_spellcheck(&base, &api_key, args, timeout),
-        Command::Pois(args) => cmd_pois(&base, &api_key, args, timeout),
-        Command::Descriptions(args) => cmd_descriptions(&base, &api_key, args, timeout),
+        Command::Context(args) => cmd_context(&base, &api_key, args, &extras, ep, timeout),
+        Command::Answers(args) => cmd_answers(&base, &api_key, args, &extras, ep, timeout),
+        Command::Web(args) => cmd_web(&base, &api_key, args, &extras, ep, timeout),
+        Command::News(args) => cmd_news(&base, &api_key, args, &extras, ep, timeout),
+        Command::Images(args) => cmd_images(&base, &api_key, args, &extras, ep, timeout),
+        Command::Videos(args) => cmd_videos(&base, &api_key, args, &extras, ep, timeout),
+        Command::Places(args) => cmd_places(&base, &api_key, args, &extras, ep, timeout),
+        Command::Suggest(args) => cmd_suggest(&base, &api_key, args, &extras, ep, timeout),
+        Command::Spellcheck(args) => cmd_spellcheck(&base, &api_key, args, &extras, ep, timeout),
+        Command::Pois(args) => cmd_pois(&base, &api_key, args, &extras, ep, timeout),
+        Command::Descriptions(args) => {
+            cmd_descriptions(&base, &api_key, args, &extras, ep, timeout)
+        }
         Command::Config { .. } => unreachable!(),
+    }
+}
+
+/// Allowed base URLs for the Brave Search API.
+const ALLOWED_BASE_URLS: &[&str] = &[
+    "https://api.search.brave.com",
+    "https://api.search.brave.software",
+];
+
+fn validate_base_url(url: &str) {
+    let normalized = url.trim_end_matches('/');
+    if !ALLOWED_BASE_URLS.contains(&normalized) {
+        eprintln!(
+            "error: base URL not in allowlist (got: {url})\n\
+             hint: allowed URLs are {}",
+            ALLOWED_BASE_URLS.join(", ")
+        );
+        std::process::exit(1);
     }
 }
 
@@ -970,6 +1038,30 @@ struct LocationHeaders {
     state_name: Option<String>,
     country: Option<String>,
     postal_code: Option<String>,
+}
+
+/// Defense-in-depth: validate endpoint path against a strict allowlist.
+/// Allowed characters: ASCII alphanumeric, `/`, `-`, `_`, `.`
+fn check_endpoint(ep: &str) -> Result<(), String> {
+    if !ep.starts_with('/') {
+        return Err(format!("--endpoint must start with '/', got: {ep}"));
+    }
+    if let Some(b) = ep
+        .bytes()
+        .find(|&b| !b.is_ascii_alphanumeric() && b != b'/' && b != b'-' && b != b'_' && b != b'.')
+    {
+        return Err(format!(
+            "--endpoint contains disallowed character '{}'",
+            char::from(b)
+        ));
+    }
+    if ep.contains("//") {
+        return Err("--endpoint must not contain consecutive slashes".into());
+    }
+    if ep.split('/').any(|s| s == "..") {
+        return Err("--endpoint must not contain '..' path segments".into());
+    }
+    Ok(())
 }
 
 /// Defense-in-depth: reject HTTP header values containing control characters
@@ -1172,27 +1264,40 @@ fn unescape_inline_newlines(s: &str) -> Cow<'_, str> {
 
 // ── Command handlers ─────────────────────────────────────────────────
 
-fn cmd_web(base: &str, key: &str, a: WebArgs, timeout: u64) {
-    let count_str = a.count.to_string();
-    let offset_str = a.offset.map(|v| v.to_string());
+fn cmd_web(
+    base: &str,
+    key: &str,
+    a: WebArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
     let goggles_resolved = a.goggles_args.resolve();
-    let qs = api::build_query(&[
-        ("q", Some(a.q.as_str())),
-        ("country", Some(a.country.as_str())),
-        ("search_lang", Some(a.search_lang.as_str())),
-        ("ui_lang", Some(a.ui_lang.as_str())),
-        ("count", Some(&count_str)),
-        ("offset", offset_str.as_deref()),
-        ("safesearch", Some(a.safesearch.as_str())),
-        ("freshness", a.freshness.as_deref()),
-        ("text_decorations", a.text_decorations.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
-        ("result_filter", a.result_filter.as_deref()),
-        ("goggles", goggles_resolved.as_deref()),
-        ("extra_snippets", a.extra_snippets.as_deref()),
-        ("units", a.units.as_deref()),
-        ("operators", a.operators.as_deref()),
+    let mut body = api::build_json_body(&[
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("ui_lang", a.ui_lang.map(Into::into)),
+        ("count", a.count.map(Into::into)),
+        ("offset", a.offset.map(Into::into)),
+        ("safesearch", a.safesearch.map(Into::into)),
+        ("freshness", a.freshness.map(Into::into)),
+        ("text_decorations", a.text_decorations.map(Into::into)),
+        ("spellcheck", a.spellcheck.map(Into::into)),
+        ("goggles", goggles_resolved.map(Into::into)),
+        ("extra_snippets", a.extra_snippets.map(Into::into)),
+        ("units", a.units.map(Into::into)),
+        ("operators", a.operators.map(Into::into)),
     ]);
+    body["q"] = a.q.into();
+    // POST body requires result_filter as a JSON array, not a comma-separated string.
+    if let Some(ref rf) = a.result_filter {
+        let arr: Vec<_> = rf
+            .split(',')
+            .map(|s| serde_json::Value::String(s.trim().into()))
+            .collect();
+        body["result_filter"] = serde_json::Value::Array(arr);
+    }
+    merge_extras(&mut body, extras);
     let loc = LocationHeaders {
         lat: a.lat,
         long: a.long,
@@ -1204,95 +1309,151 @@ fn cmd_web(base: &str, key: &str, a: WebArgs, timeout: u64) {
         postal_code: a.postal_code,
     };
     let headers = location_header_pairs(&loc);
-    api::get_with_headers(
+    api::post_json(
         base,
-        &format!("/res/v1/web/search{qs}"),
+        ep.unwrap_or("/res/v1/web/search"),
         key,
+        &body,
         &headers,
         timeout,
     );
 }
 
-fn cmd_images(base: &str, key: &str, a: ImagesArgs, timeout: u64) {
-    let count_str = a.count.to_string();
-    let qs = api::build_query(&[
+fn cmd_images(
+    base: &str,
+    key: &str,
+    a: ImagesArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let count_str = a.count.map(|v| v.to_string());
+    let params: &[(&str, Option<&str>)] = &[
         ("q", Some(a.q.as_str())),
-        ("country", Some(a.country.as_str())),
-        ("search_lang", Some(a.search_lang.as_str())),
-        ("count", Some(&count_str)),
-        ("safesearch", Some(a.safesearch.as_str())),
-        ("spellcheck", a.spellcheck.as_deref()),
-    ]);
-    api::get(base, &format!("/res/v1/images/search{qs}"), key, timeout);
+        ("country", a.country.as_deref()),
+        ("search_lang", a.search_lang.as_deref()),
+        ("count", count_str.as_deref()),
+        ("safesearch", a.safesearch.as_deref()),
+        ("spellcheck", a.spellcheck.map(bool_str)),
+    ];
+    let qs = api::build_query(params, extras);
+    let path = format!("{}{qs}", ep.unwrap_or("/res/v1/images/search"));
+    api::get(base, &path, key, timeout);
 }
 
-fn cmd_videos(base: &str, key: &str, a: VideosArgs, timeout: u64) {
-    let count_str = a.count.to_string();
-    let offset_str = a.offset.map(|v| v.to_string());
-    let qs = api::build_query(&[
-        ("q", Some(a.q.as_str())),
-        ("country", Some(a.country.as_str())),
-        ("search_lang", Some(a.search_lang.as_str())),
-        ("ui_lang", Some(a.ui_lang.as_str())),
-        ("count", Some(&count_str)),
-        ("offset", offset_str.as_deref()),
-        ("safesearch", Some(a.safesearch.as_str())),
-        ("freshness", a.freshness.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
-        ("operators", a.operators.as_deref()),
+fn cmd_videos(
+    base: &str,
+    key: &str,
+    a: VideosArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let mut body = api::build_json_body(&[
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("ui_lang", a.ui_lang.map(Into::into)),
+        ("count", a.count.map(Into::into)),
+        ("offset", a.offset.map(Into::into)),
+        ("safesearch", a.safesearch.map(Into::into)),
+        ("freshness", a.freshness.map(Into::into)),
+        ("spellcheck", a.spellcheck.map(Into::into)),
+        ("operators", a.operators.map(Into::into)),
     ]);
-    api::get(base, &format!("/res/v1/videos/search{qs}"), key, timeout);
-}
-
-fn cmd_news(base: &str, key: &str, a: NewsArgs, timeout: u64) {
-    let count_str = a.count.to_string();
-    let offset_str = a.offset.map(|v| v.to_string());
-    let goggles_resolved = a.goggles_args.resolve();
-    let qs = api::build_query(&[
-        ("q", Some(a.q.as_str())),
-        ("country", Some(a.country.as_str())),
-        ("search_lang", Some(a.search_lang.as_str())),
-        ("ui_lang", Some(a.ui_lang.as_str())),
-        ("count", Some(&count_str)),
-        ("offset", offset_str.as_deref()),
-        ("safesearch", Some(a.safesearch.as_str())),
-        ("freshness", a.freshness.as_deref()),
-        ("spellcheck", a.spellcheck.as_deref()),
-        ("extra_snippets", a.extra_snippets.as_deref()),
-        ("goggles", goggles_resolved.as_deref()),
-        ("operators", a.operators.as_deref()),
-    ]);
-    api::get(base, &format!("/res/v1/news/search{qs}"), key, timeout);
-}
-
-fn cmd_suggest(base: &str, key: &str, a: SuggestArgs, timeout: u64) {
-    let count_str = a.count.to_string();
-    let qs = api::build_query(&[
-        ("q", Some(a.q.as_str())),
-        ("lang", Some(a.lang.as_str())),
-        ("country", Some(a.country.as_str())),
-        ("count", Some(&count_str)),
-        ("rich", a.rich.as_deref()),
-    ]);
-    api::get(base, &format!("/res/v1/suggest/search{qs}"), key, timeout);
-}
-
-fn cmd_spellcheck(base: &str, key: &str, a: SpellcheckArgs, timeout: u64) {
-    let qs = api::build_query(&[
-        ("q", Some(a.q.as_str())),
-        ("lang", Some(a.lang.as_str())),
-        ("country", Some(a.country.as_str())),
-    ]);
-    api::get(
+    body["q"] = a.q.into();
+    merge_extras(&mut body, extras);
+    api::post_json(
         base,
-        &format!("/res/v1/spellcheck/search{qs}"),
+        ep.unwrap_or("/res/v1/videos/search"),
         key,
+        &body,
+        &[],
         timeout,
     );
 }
 
-fn cmd_answers(base: &str, key: &str, a: AnswersArgs, timeout: u64) {
-    let path = "/res/v1/chat/completions";
+fn cmd_news(
+    base: &str,
+    key: &str,
+    a: NewsArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let goggles_resolved = a.goggles_args.resolve();
+    let mut body = api::build_json_body(&[
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("ui_lang", a.ui_lang.map(Into::into)),
+        ("count", a.count.map(Into::into)),
+        ("offset", a.offset.map(Into::into)),
+        ("safesearch", a.safesearch.map(Into::into)),
+        ("freshness", a.freshness.map(Into::into)),
+        ("spellcheck", a.spellcheck.map(Into::into)),
+        ("extra_snippets", a.extra_snippets.map(Into::into)),
+        ("goggles", goggles_resolved.map(Into::into)),
+        ("operators", a.operators.map(Into::into)),
+    ]);
+    body["q"] = a.q.into();
+    merge_extras(&mut body, extras);
+    api::post_json(
+        base,
+        ep.unwrap_or("/res/v1/news/search"),
+        key,
+        &body,
+        &[],
+        timeout,
+    );
+}
+
+fn cmd_suggest(
+    base: &str,
+    key: &str,
+    a: SuggestArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let count_str = a.count.map(|v| v.to_string());
+    let params: &[(&str, Option<&str>)] = &[
+        ("q", Some(a.q.as_str())),
+        ("lang", a.lang.as_deref()),
+        ("country", a.country.as_deref()),
+        ("count", count_str.as_deref()),
+        ("rich", a.rich.map(bool_str)),
+    ];
+    let qs = api::build_query(params, extras);
+    let path = format!("{}{qs}", ep.unwrap_or("/res/v1/suggest/search"));
+    api::get(base, &path, key, timeout);
+}
+
+fn cmd_spellcheck(
+    base: &str,
+    key: &str,
+    a: SpellcheckArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let params: &[(&str, Option<&str>)] = &[
+        ("q", Some(a.q.as_str())),
+        ("lang", a.lang.as_deref()),
+        ("country", a.country.as_deref()),
+    ];
+    let qs = api::build_query(params, extras);
+    let path = format!("{}{qs}", ep.unwrap_or("/res/v1/spellcheck/search"));
+    api::get(base, &path, key, timeout);
+}
+
+fn cmd_answers(
+    base: &str,
+    key: &str,
+    a: AnswersArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let path = ep.unwrap_or("/res/v1/chat/completions");
 
     // Stdin mode: read raw JSON body from stdin when query is "-".
     if a.query == "-" {
@@ -1306,19 +1467,20 @@ fn cmd_answers(base: &str, key: &str, a: AnswersArgs, timeout: u64) {
             eprintln!("error: stdin JSON exceeds maximum size ({MAX_INPUT_SIZE} bytes)");
             std::process::exit(1);
         }
-        let body: serde_json::Value = match serde_json::from_str(&buf) {
+        let mut body: serde_json::Value = match serde_json::from_str(&buf) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("error: invalid JSON on stdin: {e}");
                 std::process::exit(1);
             }
         };
+        merge_extras(&mut body, extras);
 
         let is_stream = body["stream"].as_bool().unwrap_or(true);
         if is_stream {
-            api::post_json_stream(base, path, key, &body, timeout);
+            api::post_json_stream(base, path, key, &body, &[], timeout);
         } else {
-            api::post_json(base, path, key, &body, timeout);
+            api::post_json(base, path, key, &body, &[], timeout);
         }
         return;
     }
@@ -1327,14 +1489,20 @@ fn cmd_answers(base: &str, key: &str, a: AnswersArgs, timeout: u64) {
     let stream = !a.no_stream;
     let mut body = serde_json::json!({
         "messages": [{"role": "user", "content": a.query}],
-        "model": a.model,
         "stream": stream,
-        "country": a.country,
-        "language": a.language,
-        "safesearch": a.safesearch,
     });
 
     let obj = body.as_object_mut().expect("body must be a JSON object");
+    for (key, val) in [
+        ("model", a.model),
+        ("country", a.country),
+        ("language", a.language),
+        ("safesearch", a.safesearch),
+    ] {
+        if let Some(v) = val {
+            obj.insert(key.into(), v.into());
+        }
+    }
 
     if let Some(max) = a.max_completion_tokens {
         obj.insert("max_completion_tokens".into(), max.into());
@@ -1406,48 +1574,57 @@ fn cmd_answers(base: &str, key: &str, a: AnswersArgs, timeout: u64) {
         obj.insert("web_search_options".into(), wso.into());
     }
 
+    merge_extras(&mut body, extras);
+
     if stream {
-        api::post_json_stream(base, path, key, &body, timeout);
+        api::post_json_stream(base, path, key, &body, &[], timeout);
     } else {
-        api::post_json(base, path, key, &body, timeout);
+        api::post_json(base, path, key, &body, &[], timeout);
     }
 }
 
-fn cmd_context(base: &str, key: &str, a: ContextArgs, timeout: u64) {
-    let count_str = a.count.to_string();
+fn cmd_context(
+    base: &str,
+    key: &str,
+    a: ContextArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
     let goggles_resolved = a.goggles_args.resolve();
-    let qs = api::build_query(&[
-        ("q", Some(a.q.as_str())),
-        ("country", Some(a.country.as_str())),
-        ("search_lang", Some(a.search_lang.as_str())),
-        ("count", Some(&count_str)),
+    let mut body = api::build_json_body(&[
+        ("country", a.country.map(Into::into)),
+        ("search_lang", a.search_lang.map(Into::into)),
+        ("count", a.count.map(Into::into)),
         (
             "maximum_number_of_urls",
-            a.maximum_number_of_urls.as_deref(),
+            a.maximum_number_of_urls.map(Into::into),
         ),
         (
             "maximum_number_of_tokens",
-            a.maximum_number_of_tokens.as_deref(),
+            a.maximum_number_of_tokens.map(Into::into),
         ),
         (
             "maximum_number_of_snippets",
-            a.maximum_number_of_snippets.as_deref(),
+            a.maximum_number_of_snippets.map(Into::into),
         ),
         (
             "maximum_number_of_tokens_per_url",
-            a.maximum_number_of_tokens_per_url.as_deref(),
+            a.maximum_number_of_tokens_per_url.map(Into::into),
         ),
         (
             "maximum_number_of_snippets_per_url",
-            a.maximum_number_of_snippets_per_url.as_deref(),
+            a.maximum_number_of_snippets_per_url.map(Into::into),
         ),
         (
             "context_threshold_mode",
-            a.context_threshold_mode.as_deref(),
+            a.context_threshold_mode.map(Into::into),
         ),
-        ("goggles", goggles_resolved.as_deref()),
-        ("enable_local", a.enable_local.as_deref()),
+        ("goggles", goggles_resolved.map(Into::into)),
+        ("enable_local", a.enable_local.map(Into::into)),
     ]);
+    body["q"] = a.q.into();
+    merge_extras(&mut body, extras);
     let loc = LocationHeaders {
         lat: a.lat,
         long: a.long,
@@ -1459,52 +1636,62 @@ fn cmd_context(base: &str, key: &str, a: ContextArgs, timeout: u64) {
         postal_code: a.postal_code,
     };
     let headers = location_header_pairs(&loc);
-    api::get_with_headers(
+    api::post_json(
         base,
-        &format!("/res/v1/llm/context{qs}"),
+        ep.unwrap_or("/res/v1/llm/context"),
         key,
+        &body,
         &headers,
         timeout,
     );
 }
 
-fn cmd_places(base: &str, key: &str, a: PlacesArgs, timeout: u64) {
-    let count_str = a.count.to_string();
-    let qs = api::build_query(&[
+fn cmd_places(
+    base: &str,
+    key: &str,
+    a: PlacesArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
+    let count_str = a.count.map(|v| v.to_string());
+    let params: &[(&str, Option<&str>)] = &[
         ("q", a.q.as_deref()),
         ("latitude", a.latitude.as_deref()),
         ("longitude", a.longitude.as_deref()),
         ("location", a.location.as_deref()),
         ("radius", a.radius.as_deref()),
-        ("count", Some(&count_str)),
-        ("country", Some(a.country.as_str())),
-        ("search_lang", Some(a.search_lang.as_str())),
-        ("ui_lang", Some(a.ui_lang.as_str())),
-        ("units", Some(a.units.as_str())),
-        ("safesearch", Some(a.safesearch.as_str())),
-        ("spellcheck", a.spellcheck.as_deref()),
-    ]);
-    api::get(
-        base,
-        &format!("/res/v1/local/place_search{qs}"),
-        key,
-        timeout,
-    );
+        ("count", count_str.as_deref()),
+        ("country", a.country.as_deref()),
+        ("search_lang", a.search_lang.as_deref()),
+        ("ui_lang", a.ui_lang.as_deref()),
+        ("units", a.units.as_deref()),
+        ("safesearch", a.safesearch.as_deref()),
+        ("spellcheck", a.spellcheck.map(bool_str)),
+    ];
+    let qs = api::build_query(params, extras);
+    let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/place_search"));
+    api::get(base, &path, key, timeout);
 }
 
-fn cmd_pois(base: &str, key: &str, a: PoisArgs, timeout: u64) {
+fn cmd_pois(
+    base: &str,
+    key: &str,
+    a: PoisArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
     if a.ids.is_empty() {
         eprintln!("error: at least one POI ID is required");
         std::process::exit(1);
     }
-    let qs = api::build_query_repeated(
-        &[
-            ("search_lang", Some(a.search_lang.as_str())),
-            ("ui_lang", Some(a.ui_lang.as_str())),
-            ("units", a.units.as_deref()),
-        ],
-        &[("ids", &a.ids)],
-    );
+    let params: &[(&str, Option<&str>)] = &[
+        ("search_lang", a.search_lang.as_deref()),
+        ("ui_lang", a.ui_lang.as_deref()),
+        ("units", a.units.as_deref()),
+    ];
+    let qs = api::build_query_repeated(params, &[("ids", &a.ids)], extras);
     let mut headers = Vec::new();
     if let Some(ref v) = a.lat {
         validate_header_value("X-Loc-Lat", v);
@@ -1514,27 +1701,25 @@ fn cmd_pois(base: &str, key: &str, a: PoisArgs, timeout: u64) {
         validate_header_value("X-Loc-Long", v);
         headers.push(("X-Loc-Long", v.as_str()));
     }
-    api::get_with_headers(
-        base,
-        &format!("/res/v1/local/pois{qs}"),
-        key,
-        &headers,
-        timeout,
-    );
+    let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/pois"));
+    api::get_with_headers(base, &path, key, &headers, timeout);
 }
 
-fn cmd_descriptions(base: &str, key: &str, a: DescriptionsArgs, timeout: u64) {
+fn cmd_descriptions(
+    base: &str,
+    key: &str,
+    a: DescriptionsArgs,
+    extras: &[(&str, &str)],
+    ep: Option<&str>,
+    timeout: u64,
+) {
     if a.ids.is_empty() {
         eprintln!("error: at least one POI ID is required");
         std::process::exit(1);
     }
-    let qs = api::build_query_repeated(&[], &[("ids", &a.ids)]);
-    api::get(
-        base,
-        &format!("/res/v1/local/descriptions{qs}"),
-        key,
-        timeout,
-    );
+    let qs = api::build_query_repeated(&[], &[("ids", &a.ids)], extras);
+    let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/descriptions"));
+    api::get(base, &path, key, timeout);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1598,6 +1783,59 @@ mod tests {
     #[test]
     fn check_header_value_rejects_null() {
         assert!(check_header_value("X-Test", "evil\0injection").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_accepts_valid_paths() {
+        assert!(check_endpoint("/res/v1/web/search").is_ok());
+        assert!(check_endpoint("/res/v1/llm/context").is_ok());
+        assert!(check_endpoint("/beta/v2/new-endpoint").is_ok());
+        assert!(check_endpoint("/").is_ok());
+        assert!(check_endpoint("/res/v1/").is_ok()); // trailing slash
+        assert!(check_endpoint("/res/v1/foo..bar").is_ok()); // ".." as substring
+    }
+
+    #[test]
+    fn check_endpoint_rejects_missing_slash() {
+        assert!(check_endpoint("res/v1/web/search").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_rejects_disallowed_chars() {
+        assert!(check_endpoint("/foo?bar=1").is_err()); // query string
+        assert!(check_endpoint("/foo#frag").is_err()); // fragment
+        assert!(check_endpoint("/foo@bar").is_err()); // authority
+        assert!(check_endpoint("/foo\\bar").is_err()); // backslash
+        assert!(check_endpoint("/foo%2e").is_err()); // percent encoding
+        assert!(check_endpoint("/foo;bar").is_err()); // semicolon
+        assert!(check_endpoint("/foo bar").is_err()); // space
+        assert!(check_endpoint("/foo\nbar").is_err()); // newline
+        assert!(check_endpoint("/foo\rbar").is_err()); // carriage return
+        assert!(check_endpoint("/foo\0bar").is_err()); // null
+    }
+
+    #[test]
+    fn check_endpoint_rejects_path_traversal() {
+        assert!(check_endpoint("/../admin").is_err());
+        assert!(check_endpoint("/res/../admin").is_err());
+        assert!(check_endpoint("/res/v1/..").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_rejects_consecutive_slashes() {
+        assert!(check_endpoint("//evil.com").is_err());
+        assert!(check_endpoint("/res//v1").is_err());
+    }
+
+    #[test]
+    fn check_endpoint_single_dot_segment_allowed() {
+        assert!(check_endpoint("/res/./v1").is_ok()); // `.` is harmless (current dir)
+    }
+
+    #[test]
+    fn check_endpoint_rejects_empty_and_non_ascii() {
+        assert!(check_endpoint("").is_err()); // no leading `/`
+        assert!(check_endpoint("/res/caf\u{00e9}").is_err()); // non-ASCII byte rejected
     }
 
     #[test]
@@ -1905,5 +2143,120 @@ mod tests {
     #[test]
     fn unescape_quadruple_backslash() {
         assert_eq!(unescape_inline_newlines("\\\\\\\\"), "\\\\");
+    }
+
+    // ── parse_extra ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_extra_basic() {
+        assert_eq!(parse_extra(&["key=value".into()]), vec![("key", "value")]);
+    }
+
+    #[test]
+    fn parse_extra_value_with_equals() {
+        assert_eq!(parse_extra(&["k=a=b".into()]), vec![("k", "a=b")]);
+    }
+
+    #[test]
+    fn parse_extra_empty_value() {
+        assert_eq!(parse_extra(&["key=".into()]), vec![("key", "")]);
+    }
+
+    #[test]
+    fn parse_extra_multiple() {
+        assert_eq!(
+            parse_extra(&["a=1".into(), "b=2".into()]),
+            vec![("a", "1"), ("b", "2")]
+        );
+    }
+
+    #[test]
+    fn parse_extra_empty_input() {
+        let empty: Vec<String> = vec![];
+        assert!(parse_extra(&empty).is_empty());
+    }
+
+    // ── inject_default_subcommand_impl with --extra / --endpoint ─────
+
+    #[test]
+    fn inject_extra_before_subcommand() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra foo=bar web query")),
+            args("bx --extra foo=bar web query")
+        );
+    }
+
+    #[test]
+    fn inject_extra_before_query() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra foo=bar query")),
+            args("bx --extra foo=bar context query")
+        );
+    }
+
+    #[test]
+    fn inject_extra_equals_form() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra=foo=bar query")),
+            args("bx --extra=foo=bar context query")
+        );
+    }
+
+    #[test]
+    fn inject_multiple_extras() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra a=1 --extra b=2 query")),
+            args("bx --extra a=1 --extra b=2 context query")
+        );
+    }
+
+    #[test]
+    fn inject_endpoint_before_subcommand() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --endpoint /custom web query")),
+            args("bx --endpoint /custom web query")
+        );
+    }
+
+    #[test]
+    fn inject_endpoint_before_query() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --endpoint /custom query")),
+            args("bx --endpoint /custom context query")
+        );
+    }
+
+    #[test]
+    fn inject_extra_at_end() {
+        // --extra with no value: loop ends without panic, clap will error later
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra")),
+            args("bx --extra")
+        );
+    }
+
+    #[test]
+    fn inject_endpoint_equals_form() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --endpoint=/custom query")),
+            args("bx --endpoint=/custom context query")
+        );
+    }
+
+    #[test]
+    fn inject_extra_and_endpoint_combined() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra a=1 --endpoint /p query")),
+            args("bx --extra a=1 --endpoint /p context query")
+        );
+    }
+
+    #[test]
+    fn inject_extra_value_looks_like_subcommand() {
+        // --extra consumes "web=1" as its value, not as a subcommand
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --extra web=1 query")),
+            args("bx --extra web=1 context query")
+        );
     }
 }
