@@ -961,7 +961,9 @@ fn main() {
         Command::Suggest(args) => cmd_suggest(&base, &api_key, args, &extras, ep, timeout),
         Command::Spellcheck(args) => cmd_spellcheck(&base, &api_key, args, &extras, ep, timeout),
         Command::Pois(args) => cmd_pois(&base, &api_key, args, &extras, ep, timeout),
-        Command::Descriptions(args) => cmd_descriptions(&base, &api_key, args, &extras, ep, timeout),
+        Command::Descriptions(args) => {
+            cmd_descriptions(&base, &api_key, args, &extras, ep, timeout)
+        }
         Command::Config { .. } => unreachable!(),
     }
 }

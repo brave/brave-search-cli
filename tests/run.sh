@@ -287,9 +287,11 @@ else pass "errors: invalid domain"; fi
 # ── Validation passthrough ───────────────────────────────────────────
 
 # count=21 was previously rejected client-side (max was 20 for web);
-# now the CLI passes it through and the API decides.
-run $BX web "test" --count 21
-check "validation: count beyond old limit" '.web.results | length >= 1'
+# now the CLI passes it through and the API decides (rejects with 422).
+out=$($BX web "test" --count 21 2>"$tmp/err") && rc=0 || rc=$?
+err=$(cat "$tmp/err")
+if [ $rc -ne 1 ]; then fail "validation: count=21 API rejection" "expected exit 1, got $rc"
+else pass "validation: count=21 API rejection"; fi
 
 # count=0 should be rejected by the API (not the CLI)
 out=$($BX web "test" --count 0 2>"$tmp/err") && rc=0 || rc=$?
