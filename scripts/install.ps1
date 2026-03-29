@@ -172,12 +172,24 @@ try {
     # --- install ---
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $destination = Join-Path $InstallDir $Bin
-    Copy-Item -Path $binaryPath -Destination $destination -Force
 
-    # Verify binary executes.
-    & $destination --version *> $null
+    # Verify the new binary executes BEFORE replacing any existing install.
+    & $binaryPath --version *> $null
     if ($LASTEXITCODE -ne 0) {
-        Fail "installed binary failed to execute" "this may indicate a platform mismatch or a corrupted download"
+        Fail "downloaded binary failed to execute" `
+             "existing installation (if any) has not been modified" `
+             "this may indicate a platform mismatch or a corrupted download"
+    }
+
+    # Atomic replacement: stage in install dir (same volume), then rename.
+    # File.Replace uses the Windows ReplaceFile API for atomic swap.
+    # For fresh installs (no existing binary), Move-Item is sufficient.
+    $stagingPath = "$destination.tmp"
+    Copy-Item -Path $binaryPath -Destination $stagingPath -Force
+    if (Test-Path $destination) {
+        [System.IO.File]::Replace($stagingPath, $destination, $null)
+    } else {
+        Move-Item -Path $stagingPath -Destination $destination -Force
     }
 
     # GitHub Actions support.
