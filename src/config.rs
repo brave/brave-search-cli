@@ -247,6 +247,9 @@ pub fn onboard(config_path: Option<&Path>) -> Result<String, String> {
     }
 
     eprintln!();
+    if let Some(p) = resolve_config_path(config_path) {
+        eprintln!("Your key will be saved to {}", p.display());
+    }
     let key = read_key_line()?;
 
     migrate_legacy_key(&key, config_path).map_err(|e| format!("failed to save API key: {e}"))?;
