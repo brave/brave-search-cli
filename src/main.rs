@@ -2,6 +2,7 @@ mod api;
 mod config;
 
 use std::borrow::Cow;
+use std::path::Path;
 
 use clap::{Args, Parser, Subcommand};
 
@@ -31,6 +32,10 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "bx", version, verbatim_doc_comment)]
 struct Cli {
+    /// Path to config file
+    #[arg(long, global = true)]
+    config: Option<std::path::PathBuf>,
+
     /// API key (prefer env var or config file — command-line flags are visible in process listings)
     #[arg(
         long,
@@ -40,19 +45,18 @@ struct Cli {
     )]
     api_key: Option<String>,
 
-    /// Base URL for the API
+    /// Base URL for the API [default: https://api.search.brave.com]
     #[arg(
         long,
         env = "BRAVE_SEARCH_BASE_URL",
-        default_value = "https://api.search.brave.com",
         global = true,
         hide_env_values = true
     )]
-    base_url: String,
+    base_url: Option<String>,
 
-    /// Request timeout in seconds (default: 30)
-    #[arg(long, global = true, default_value_t = 30)]
-    timeout: u64,
+    /// Request timeout in seconds [default: 30]
+    #[arg(long, global = true)]
+    timeout: Option<u64>,
 
     #[command(subcommand)]
     command: Command,
@@ -212,15 +216,16 @@ enum Command {
     #[command(verbatim_doc_comment, hide = true)]
     Descriptions(DescriptionsArgs),
 
-    /// Manage local API key — set-key, show-key, path
+    /// Manage configuration — set-key, show-key, show, path
     ///
-    /// Stores the API key in ~/.config/brave-search/api_key (Linux),
-    /// ~/Library/Application Support/brave-search/api_key (macOS),
-    /// %APPDATA%\brave-search\api_key (Windows).
+    /// Config file: ~/.config/brave-search/config.json (Linux),
+    /// ~/Library/Application Support/brave-search/config.json (macOS),
+    /// %APPDATA%\brave-search\config.json (Windows).
     ///
     /// Examples:
     ///   bx config set-key <KEY>
     ///   bx config show-key
+    ///   bx config show
     ///   bx config path
     #[command(verbatim_doc_comment)]
     Config {
@@ -240,6 +245,8 @@ pub enum ConfigCmd {
     ShowKey,
     /// Print the config file path
     Path,
+    /// Show the full configuration (API key masked)
+    Show,
 }
 
 // ── Subcommand args ──────────────────────────────────────────────────
@@ -811,7 +818,7 @@ fn inject_default_subcommand() -> Vec<String> {
 
 fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
     // Flags that consume the next argument as a value
-    const VALUE_FLAGS: &[&str] = &["--api-key", "--base-url", "--timeout"];
+    const VALUE_FLAGS: &[&str] = &["--api-key", "--base-url", "--timeout", "--config"];
 
     let mut i = 1; // skip binary name
     while i < args.len() {
@@ -845,35 +852,8 @@ fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
     args // no positional found (e.g. `bx --help`)
 }
 
-fn main() {
-    let cli = Cli::parse_from(inject_default_subcommand());
-
-    // Config subcommand doesn't need an API key.
-    if let Command::Config { ref cmd } = cli.command {
-        config::handle_config(cmd);
-        return;
-    }
-
-    let api_key = resolve_api_key(&cli);
-    let base = &cli.base_url;
-    validate_base_url(base);
-    let timeout = cli.timeout;
-
-    match cli.command {
-        Command::Context(args) => cmd_context(base, &api_key, args, timeout),
-        Command::Answers(args) => cmd_answers(base, &api_key, args, timeout),
-        Command::Web(args) => cmd_web(base, &api_key, args, timeout),
-        Command::News(args) => cmd_news(base, &api_key, args, timeout),
-        Command::Images(args) => cmd_images(base, &api_key, args, timeout),
-        Command::Videos(args) => cmd_videos(base, &api_key, args, timeout),
-        Command::Places(args) => cmd_places(base, &api_key, args, timeout),
-        Command::Suggest(args) => cmd_suggest(base, &api_key, args, timeout),
-        Command::Spellcheck(args) => cmd_spellcheck(base, &api_key, args, timeout),
-        Command::Pois(args) => cmd_pois(base, &api_key, args, timeout),
-        Command::Descriptions(args) => cmd_descriptions(base, &api_key, args, timeout),
-        Command::Config { .. } => unreachable!(),
-    }
-}
+const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
+const DEFAULT_TIMEOUT: u64 = 30;
 
 /// Allowed base URLs for the Brave Search API.
 const ALLOWED_BASE_URLS: &[&str] = &[
@@ -893,37 +873,85 @@ fn validate_base_url(url: &str) {
     }
 }
 
-fn non_empty_env(var: &str) -> Option<String> {
-    std::env::var(var)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+fn main() {
+    let cli = Cli::parse_from(inject_default_subcommand());
+    let cfg_path = cli.config.as_deref();
+
+    // Config subcommand doesn't need an API key.
+    if let Command::Config { ref cmd } = cli.command {
+        config::handle_config(cmd, cfg_path);
+        return;
+    }
+
+    let config = match config::load_config(cfg_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let api_key = resolve_api_key(cli.api_key, config.api_key, cfg_path);
+    let base: Cow<'static, str> = cli
+        .base_url
+        .or(config.base_url)
+        .map_or(Cow::Borrowed(DEFAULT_BASE_URL), Cow::Owned);
+    validate_base_url(&base);
+    let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
+    if timeout == 0 {
+        eprintln!("error: timeout must be greater than 0");
+        std::process::exit(1);
+    }
+
+    match cli.command {
+        Command::Context(args) => cmd_context(&base, &api_key, args, timeout),
+        Command::Answers(args) => cmd_answers(&base, &api_key, args, timeout),
+        Command::Web(args) => cmd_web(&base, &api_key, args, timeout),
+        Command::News(args) => cmd_news(&base, &api_key, args, timeout),
+        Command::Images(args) => cmd_images(&base, &api_key, args, timeout),
+        Command::Videos(args) => cmd_videos(&base, &api_key, args, timeout),
+        Command::Places(args) => cmd_places(&base, &api_key, args, timeout),
+        Command::Suggest(args) => cmd_suggest(&base, &api_key, args, timeout),
+        Command::Spellcheck(args) => cmd_spellcheck(&base, &api_key, args, timeout),
+        Command::Pois(args) => cmd_pois(&base, &api_key, args, timeout),
+        Command::Descriptions(args) => cmd_descriptions(&base, &api_key, args, timeout),
+        Command::Config { .. } => unreachable!(),
+    }
 }
 
-fn resolve_api_key(cli: &Cli) -> String {
+fn non_empty_env(var: &str) -> Option<String> {
+    std::env::var(var).ok().and_then(config::trim_non_empty)
+}
+
+fn resolve_api_key(
+    cli_api_key: Option<String>,
+    config_api_key: Option<String>,
+    cfg_path: Option<&Path>,
+) -> String {
     // 1. --api-key flag / BRAVE_SEARCH_API_KEY env (handled by clap)
-    if let Some(key) = cli
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return key.to_string();
+    if let Some(k) = cli_api_key.and_then(config::trim_non_empty) {
+        return k;
     }
-
     // 2. BRAVE_API_KEY fallback (alternate env name used by some tooling)
-    if let Some(key) = non_empty_env("BRAVE_API_KEY") {
-        return key;
+    if let Some(k) = non_empty_env("BRAVE_API_KEY") {
+        return k;
     }
-
-    // 3. Config file
-    if let Some(key) = config::load_api_key() {
-        return key;
+    // 3. Config file (filter empty — api_key = "" deserializes as Some(""))
+    if let Some(k) = config_api_key.and_then(config::trim_non_empty) {
+        return k;
     }
-
-    // 4. Interactive onboarding
-    match config::onboard() {
-        Ok(key) => key,
+    // 4. Legacy ~/.config/brave-search/api_key file → auto-migrate
+    if let Some(k) = config::load_legacy_api_key() {
+        match config::migrate_legacy_key(&k, cfg_path) {
+            Ok(()) => eprintln!("note: migrated API key from legacy api_key file to config.json"),
+            Err(e) => eprintln!(
+                "warning: failed to migrate legacy API key: {e}; continuing with legacy api_key file"
+            ),
+        }
+        return k;
+    }
+    // 5. Interactive onboarding
+    match config::onboard(cfg_path) {
+        Ok(k) => k,
         Err(msg) => {
             eprintln!("error: {msg}");
             std::process::exit(1);
@@ -1749,6 +1777,56 @@ mod tests {
         assert_eq!(
             inject_default_subcommand_impl(args("bx --api-key=KEY query")),
             args("bx --api-key=KEY context query")
+        );
+    }
+
+    // ── inject_default_subcommand_impl with --config ───────────────
+
+    #[test]
+    fn inject_skips_config_flag() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json myquery")),
+            args("bx --config /tmp/c.json context myquery")
+        );
+    }
+
+    #[test]
+    fn inject_config_equals_form() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --config=/tmp/c.json myquery")),
+            args("bx --config=/tmp/c.json context myquery")
+        );
+    }
+
+    #[test]
+    fn inject_config_with_subcommand() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json web myquery")),
+            args("bx --config /tmp/c.json web myquery")
+        );
+    }
+
+    #[test]
+    fn inject_config_with_other_flags() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json --timeout 60 myquery")),
+            args("bx --config /tmp/c.json --timeout 60 context myquery")
+        );
+    }
+
+    #[test]
+    fn inject_config_dangling_at_end() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --config")),
+            args("bx --config")
+        );
+    }
+
+    #[test]
+    fn inject_config_before_double_dash() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --config /tmp/c.json -- web")),
+            args("bx --config /tmp/c.json context -- web")
         );
     }
 

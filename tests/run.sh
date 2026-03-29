@@ -101,6 +101,10 @@ if [ $rc -ne 0 ]; then fail "cli: config path" "exit $rc — $err"
 elif [ -z "$out" ]; then fail "cli: config path" "empty output"
 else pass "cli: config path"; fi
 
+run $BX config show
+if [ $rc -ne 0 ]; then fail "cli: config show" "exit $rc — $err"
+else pass "cli: config show"; fi
+
 # ── Default subcommand (context) ─────────────────────────────────────
 
 run $BX "tokio spawn async task" --count 3
