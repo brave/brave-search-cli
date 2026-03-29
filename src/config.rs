@@ -40,8 +40,8 @@ fn legacy_key_path() -> Option<PathBuf> {
 
 // ── Load / save ──────────────────────────────────────────────────────
 
-/// Loads the JSON config file. Returns `Config::default()` if the default path
-/// is missing. Returns an error if an explicit `--config` path is missing or unreadable.
+/// Loads the JSON config file. Returns `Config::default()` when the default
+/// path does not exist. Returns an error for any other failure.
 pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
     let is_explicit = override_path.is_some();
     let path = match resolve_config_path(override_path) {
@@ -54,16 +54,8 @@ pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
             if contents.trim().is_empty() {
                 return Ok(Config::default());
             }
-            match serde_json::from_str::<Config>(&contents) {
-                Ok(cfg) => Ok(cfg),
-                Err(e) => {
-                    if is_explicit {
-                        return Err(format!("failed to parse {}: {e}", path.display()));
-                    }
-                    eprintln!("warning: failed to parse {}: {e}", path.display());
-                    Ok(Config::default())
-                }
-            }
+            serde_json::from_str::<Config>(&contents)
+                .map_err(|e| format!("failed to parse {}: {e}", path.display()))
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             if is_explicit {
@@ -72,13 +64,7 @@ pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
                 Ok(Config::default())
             }
         }
-        Err(e) => {
-            if is_explicit {
-                return Err(format!("cannot read {}: {e}", path.display()));
-            }
-            eprintln!("warning: cannot read {}: {e}", path.display());
-            Ok(Config::default())
-        }
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
     }
 }
 
@@ -153,6 +139,14 @@ fn remove_legacy_key_file() {
     }
 }
 
+/// Saves an API key to the config file and removes any legacy key file.
+/// On save failure the legacy file is left in place.
+pub fn migrate_legacy_key(key: &str, config_path: Option<&Path>) -> io::Result<()> {
+    save_api_key(key, config_path)?;
+    remove_legacy_key_file();
+    Ok(())
+}
+
 /// Validates that an API key looks reasonable before saving.
 fn validate_api_key(key: &str) -> io::Result<()> {
     if key.len() < 8 {
@@ -172,7 +166,10 @@ fn validate_api_key(key: &str) -> io::Result<()> {
 fn save_api_key(key: &str, config_path: Option<&Path>) -> io::Result<()> {
     let trimmed = key.trim();
     validate_api_key(trimmed)?;
-    let mut config = load_config(config_path).unwrap_or_default();
+    let mut config = load_config(config_path).unwrap_or_else(|e| {
+        eprintln!("warning: {e}; other settings may be reset");
+        Config::default()
+    });
     config.api_key = Some(trimmed.to_string());
     save_config(&config, config_path)
 }
@@ -196,8 +193,11 @@ fn mask_key(key: &str) -> String {
 /// Loads the API key from the config file, falling back to the legacy file.
 fn load_api_key_for_display(config_path: Option<&Path>) -> Option<String> {
     load_config(config_path)
-        .ok()
-        .and_then(|c| c.api_key)
+        .unwrap_or_else(|e| {
+            eprintln!("warning: {e}");
+            Config::default()
+        })
+        .api_key
         .and_then(trim_non_empty)
         .or_else(load_legacy_api_key)
 }
@@ -249,12 +249,10 @@ pub fn onboard(config_path: Option<&Path>) -> Result<String, String> {
     eprintln!();
     let key = read_key_line()?;
 
-    save_api_key(&key, config_path).map_err(|e| format!("failed to save API key: {e}"))?;
-    remove_legacy_key_file();
-    let path = resolve_config_path(config_path)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    eprintln!("API key saved to {path}");
+    migrate_legacy_key(&key, config_path).map_err(|e| format!("failed to save API key: {e}"))?;
+    if let Some(p) = resolve_config_path(config_path) {
+        eprintln!("API key saved to {}", p.display());
+    }
 
     Ok(key)
 }
@@ -283,13 +281,11 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
                     }
                 },
             };
-            match save_api_key(&resolved, config_path) {
+            match migrate_legacy_key(&resolved, config_path) {
                 Ok(()) => {
-                    remove_legacy_key_file();
-                    let path = resolve_config_path(config_path)
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
-                    eprintln!("API key saved to {path}");
+                    if let Some(p) = resolve_config_path(config_path) {
+                        eprintln!("API key saved to {}", p.display());
+                    }
                 }
                 Err(e) => {
                     eprintln!("error: failed to save API key: {e}");
@@ -641,5 +637,85 @@ mod tests {
             assert!(p.ends_with("config.json"));
             assert!(p.parent().unwrap().ends_with("brave-search"));
         }
+    }
+
+    #[test]
+    fn parse_non_object_root_rejected() {
+        assert!(serde_json::from_str::<Config>("null").is_err());
+        assert!(serde_json::from_str::<Config>(r#""hello""#).is_err());
+        assert!(serde_json::from_str::<Config>("42").is_err());
+    }
+
+    #[test]
+    fn parse_timeout_negative_rejected() {
+        assert!(serde_json::from_str::<Config>(r#"{"timeout":-1}"#).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_config_override_permission_denied_returns_err() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#"{"timeout":10}"#).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(load_config(Some(p.as_path())).is_err());
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn load_config_override_non_object_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#""hello""#).unwrap();
+        assert!(load_config(Some(p.as_path())).is_err());
+    }
+
+    #[test]
+    fn load_config_override_empty_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, "{}").unwrap();
+        let c = load_config(Some(p.as_path())).unwrap();
+        assert!(c.api_key.is_none());
+        assert!(c.timeout.is_none());
+    }
+
+    #[test]
+    fn save_api_key_with_corrupt_config_still_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, "{invalid").unwrap();
+        save_api_key("newkey12345", Some(p.as_path())).unwrap();
+        let c = load_config(Some(p.as_path())).unwrap();
+        assert_eq!(c.api_key.as_deref(), Some("newkey12345"));
+    }
+
+    #[test]
+    fn migrate_legacy_key_saves_to_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        migrate_legacy_key("testkey12345", Some(p.as_path())).unwrap();
+        let c = load_config(Some(p.as_path())).unwrap();
+        assert_eq!(c.api_key.as_deref(), Some("testkey12345"));
+    }
+
+    #[test]
+    fn migrate_legacy_key_preserves_other_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, r#"{"timeout":42}"#).unwrap();
+        migrate_legacy_key("testkey12345", Some(p.as_path())).unwrap();
+        let c = load_config(Some(p.as_path())).unwrap();
+        assert_eq!(c.api_key.as_deref(), Some("testkey12345"));
+        assert_eq!(c.timeout, Some(42));
+    }
+
+    #[test]
+    fn migrate_legacy_key_invalid_key_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        assert!(migrate_legacy_key("short", Some(p.as_path())).is_err());
+        assert!(!p.exists());
     }
 }

@@ -897,6 +897,10 @@ fn main() {
         .map_or(Cow::Borrowed(DEFAULT_BASE_URL), Cow::Owned);
     validate_base_url(&base);
     let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
+    if timeout == 0 {
+        eprintln!("error: timeout must be greater than 0");
+        std::process::exit(1);
+    }
 
     match cli.command {
         Command::Context(args) => cmd_context(&base, &api_key, args, timeout),
@@ -935,9 +939,14 @@ fn resolve_api_key(
     if let Some(k) = config_api_key.and_then(config::trim_non_empty) {
         return k;
     }
-    // 4. Legacy ~/.config/brave-search/api_key file
+    // 4. Legacy ~/.config/brave-search/api_key file → auto-migrate
     if let Some(k) = config::load_legacy_api_key() {
-        eprintln!("hint: using legacy api_key file; run `bx config set-key` to migrate");
+        match config::migrate_legacy_key(&k, cfg_path) {
+            Ok(()) => eprintln!("note: migrated API key from legacy api_key file to config.json"),
+            Err(e) => eprintln!(
+                "warning: failed to migrate legacy API key: {e}; continuing with legacy api_key file"
+            ),
+        }
         return k;
     }
     // 5. Interactive onboarding
