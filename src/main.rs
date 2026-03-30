@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod update;
 
 use std::borrow::Cow;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -228,6 +229,21 @@ enum Command {
     ///   bx descriptions PLACE_ID_1 PLACE_ID_2 | jq '.results[].description'
     #[command(verbatim_doc_comment, hide = true)]
     Descriptions(DescriptionsArgs),
+
+    /// Update bx to the latest version
+    ///
+    /// Downloads and installs the latest release from GitHub.
+    /// Uses SHA256 checksum verification for integrity.
+    ///
+    /// Examples:
+    ///   bx update            # download and install latest version
+    ///   bx update --check    # check for updates without installing
+    #[command(verbatim_doc_comment)]
+    Update {
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Manage configuration — set-key, show-key, show, path
     ///
@@ -827,6 +843,7 @@ const SUBCOMMANDS: &[&str] = &[
     "spellcheck",
     "pois",
     "descriptions",
+    "update",
     "config",
     "help",
 ];
@@ -918,10 +935,24 @@ fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
     let cfg_path = cli.config.as_deref();
 
+    // Clean up stale .old binary from a previous Windows update.
+    #[cfg(windows)]
+    update::cleanup_old_binary();
+
     // Config subcommand doesn't need an API key.
     if let Command::Config { ref cmd } = cli.command {
         config::handle_config(cmd, cfg_path);
         return;
+    }
+
+    // Update subcommand doesn't need an API key.
+    if let Command::Update { check } = cli.command {
+        let code = if check {
+            update::check_for_update()
+        } else {
+            update::perform_update()
+        };
+        std::process::exit(code);
     }
 
     let config = match config::load_config(cfg_path) {
@@ -977,7 +1008,7 @@ fn main() {
         Command::Descriptions(args) => {
             cmd_descriptions(&base, &api_key, args, &extras, ep, timeout)
         }
-        Command::Config { .. } => unreachable!(),
+        Command::Update { .. } | Command::Config { .. } => unreachable!(),
     }
 }
 
