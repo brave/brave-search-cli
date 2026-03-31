@@ -181,13 +181,15 @@ enum Command {
     ///
     /// Search by query and/or location. Provide location via --location string
     /// or --latitude/--longitude coordinates. Returns names, addresses, ratings, hours.
+    /// Query is optional — you can search by location alone.
     ///
     /// Output: .results[] — array of {title, postal_address, contact}
     ///
     /// Examples:
-    ///   bx places --location "San Francisco CA US" -q "coffee"
-    ///   bx places --latitude 37.7749 --longitude -122.4194 -q "pizza"
-    ///   bx places --location "NYC" -q "museums" | jq '.results[].title'
+    ///   bx places "coffee" --location "San Francisco CA US"
+    ///   bx places "pizza" --latitude 37.7749 --longitude -122.4194
+    ///   bx places "museums" --location "NYC" | jq '.results[].title'
+    ///   bx places --location "NYC" --count 5   # no query, location-only browse
     #[command(verbatim_doc_comment)]
     Places(PlacesArgs),
 
@@ -729,8 +731,7 @@ struct ContextArgs {
 
 #[derive(Parser)]
 struct PlacesArgs {
-    /// Search query
-    #[arg(long, short)]
+    /// Search query (optional — omit to browse by location)
     q: Option<String>,
 
     /// Latitude
