@@ -204,8 +204,11 @@ check "videos: freshness" '.results | length >= 1'
 
 # ── Places ────────────────────────────────────────────────────────────
 
+run $BX places "coffee" --location "San Francisco, CA" --count 3
+check "places: positional query" '.results[0] | has("title")'
+
 run $BX places --location "San Francisco, CA" --count 3
-check "places: basic" '.results[0] | has("title")'
+check "places: no query (location only)" '.results[0] | has("title")'
 
 # ── Suggest ───────────────────────────────────────────────────────────
 
