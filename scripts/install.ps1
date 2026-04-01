@@ -76,12 +76,10 @@ if (-not $osArch) {
 $archProbe = if ($osArch) { $osArch.ToUpperInvariant() } else { "" }
 switch -Regex ($archProbe) {
     "^(X64|AMD64)$" { $arch = "amd64"; break }
-    "^ARM64$" {
-        Fail "Windows arm64 binaries are not currently published" "supported platform for this script is windows-amd64"
-    }
+    "^ARM64$" { $arch = "arm64"; break }
     default {
         $reportedArch = if ($osArch) { $osArch } else { "(unknown)" }
-        Fail "unsupported architecture: $reportedArch" "only amd64 is currently supported on Windows"
+        Fail "unsupported architecture: $reportedArch" "supported: amd64, arm64"
     }
 }
 

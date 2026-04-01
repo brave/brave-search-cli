@@ -421,6 +421,7 @@ make linux-amd64     # → dist/bx-<version>-linux-amd64
 make linux-arm64     # → dist/bx-<version>-linux-arm64
 make darwin-arm64    # → dist/bx-<version>-darwin-arm64
 make windows-amd64   # → dist/bx-<version>-windows-amd64.exe
+make windows-arm64   # → dist/bx-<version>-windows-arm64.exe
 make dist-all        # → all of the above
 ```
 

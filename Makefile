@@ -37,8 +37,14 @@ windows-amd64:
 	  --build-arg TARGET=x86_64-pc-windows-gnu .
 	$(call docker-extract,$(BINARY)-$@,$@,.exe)
 
+.PHONY: windows-arm64
+windows-arm64:
+	docker build -f Dockerfile.windows-arm64 -t $(BINARY)-$@ \
+	  --build-arg TARGET=aarch64-pc-windows-gnullvm .
+	$(call docker-extract,$(BINARY)-$@,$@,.exe)
+
 .PHONY: dist-all
-dist-all: linux-amd64 linux-arm64 darwin-arm64 windows-amd64
+dist-all: linux-amd64 linux-arm64 darwin-arm64 windows-amd64 windows-arm64
 
 .PHONY: release
 release:
