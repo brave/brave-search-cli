@@ -61,6 +61,7 @@ jobs:
           - target: linux-arm64
           - target: darwin-arm64
           - target: windows-amd64
+          - target: windows-arm64
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

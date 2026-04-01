@@ -1,0 +1,17 @@
+ARG TARGET=aarch64-pc-windows-gnullvm
+
+# Pin by digest to prevent supply-chain tag-swap attacks.
+# Renovate will auto-update this digest when new versions are published.
+FROM ghcr.io/rust-cross/cargo-zigbuild:latest@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c AS builder
+ARG TARGET
+
+RUN rustup target add "$TARGET"
+
+WORKDIR /src
+COPY . .
+
+RUN cargo zigbuild --release --target "$TARGET"
+
+FROM scratch
+ARG TARGET
+COPY --from=builder /src/target/${TARGET}/release/bx.exe /bx.exe
