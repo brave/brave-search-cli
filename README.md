@@ -274,6 +274,27 @@ bx --config ~/.config/brave-search/dev.json web "test"
 
 **Security tip:** Prefer the env var or config file over `--api-key`, which is visible in process listings. Use `bx config set-key` without an argument to enter the key interactively, avoiding shell history.
 
+### Local Proxy
+
+You can point `bx` at a local reverse proxy instead of the Brave API directly. This is useful for sandboxed environments where credentials are managed outside the sandbox.
+
+Allowed localhost forms:
+- `http://127.0.0.1[:<port>][/path]`
+- `http://[::1][:<port>][/path]`
+- `http://localhost[:<port>][/path]` (resolved and rewritten to a literal loopback IP)
+
+```bash
+# Point bx at a local proxy on port 8080 with path prefix /brave
+BRAVE_SEARCH_BASE_URL=http://127.0.0.1:8080/brave bx "your query"
+
+# Or in config.json
+# { "base_url": "http://127.0.0.1:8080/brave" }
+```
+
+The proxy receives requests at the configured base URL (e.g. `http://127.0.0.1:8080/brave/res/v1/web/search?q=...`) and can inject the `X-Subscription-Token` header before forwarding to `api.search.brave.com`. Since `bx` still requires an API key, set a placeholder: `BRAVE_SEARCH_API_KEY=unused`.
+
+Only loopback addresses are allowed for `http://` URLs — non-loopback IPs and arbitrary hostnames are rejected. The `localhost` hostname is resolved at startup and rewritten to a literal IP to prevent DNS rebinding.
+
 ## Commands
 
 | Command | Description | Output Shape |

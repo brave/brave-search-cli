@@ -2,6 +2,7 @@ mod api;
 mod config;
 
 use std::borrow::Cow;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 
 use clap::{Args, Parser, Subcommand};
@@ -930,17 +931,28 @@ fn main() {
             std::process::exit(1);
         }
     };
+
     let api_key = resolve_api_key(cli.api_key, config.api_key, cfg_path);
-    let base: Cow<'static, str> = cli
+
+    let base_raw: Cow<'static, str> = cli
         .base_url
         .or(config.base_url)
         .map_or(Cow::Borrowed(DEFAULT_BASE_URL), Cow::Owned);
-    validate_base_url(&base);
+
+    let base = match check_base_url(&base_raw) {
+        Ok(url) => url,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            std::process::exit(1);
+        }
+    };
+
     let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
     if timeout == 0 {
         eprintln!("error: timeout must be greater than 0");
         std::process::exit(1);
     }
+
     let extras = parse_extra(&cli.extra);
     let ep = cli.endpoint.as_deref();
 
@@ -975,16 +987,146 @@ const ALLOWED_BASE_URLS: &[&str] = &[
     "https://api.search.brave.software",
 ];
 
-fn validate_base_url(url: &str) {
-    let normalized = url.trim_end_matches('/');
-    if !ALLOWED_BASE_URLS.contains(&normalized) {
-        eprintln!(
-            "error: base URL not in allowlist (got: {url})\n\
-             hint: allowed URLs are {}",
-            ALLOWED_BASE_URLS.join(", ")
-        );
-        std::process::exit(1);
+/// Validates and normalizes the base URL.
+///
+/// **Security model (SSRF prevention):**
+/// - Production/staging HTTPS URLs pass via a static allowlist.
+/// - Localhost URLs (`http://` only) are allowed for local reverse-proxy setups
+///   (e.g. sandboxed agents that inject credentials via a proxy).
+/// - Only loopback addresses are accepted: `127.0.0.0/8` (IPv4), `::1` (IPv6),
+///   or the hostname `localhost`.
+///
+/// **TOCTOU resistance:** the hostname `localhost` is resolved once, ALL
+/// addresses are verified as loopback, then the URL is rewritten to use the
+/// resolved literal IP — ureq connects directly, no rebinding window.
+fn check_base_url(url: &str) -> Result<Cow<'_, str>, String> {
+    let url = url.trim_end_matches('/');
+    if ALLOWED_BASE_URLS.contains(&url) {
+        return Ok(Cow::Borrowed(url));
     }
+
+    let rest = url.strip_prefix("http://").ok_or_else(|| {
+        format!(
+            "base URL not allowed (got: {url})\n\
+         hint: allowed URLs are {}, or http://localhost:<port>",
+            ALLOWED_BASE_URLS.join(", ")
+        )
+    })?;
+
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+
+    if authority.is_empty() {
+        return Err("base URL has empty host".into());
+    }
+
+    // Reject userinfo — prevents SSRF via authority confusion
+    // (e.g. http://127.0.0.1@evil.com makes evil.com the real host).
+    if authority.contains('@') {
+        return Err(format!("base URL must not contain userinfo (got: {url})"));
+    }
+
+    let (host, port) = parse_authority(authority)?;
+
+    // IpAddr parser is strict: Ipv4Addr rejects octal (0177.0.0.1), decimal
+    // (2130706433), shorthand (127.1), and leading zeros. Ipv6Addr::is_loopback()
+    // only matches ::1; IPv4-mapped ::ffff:127.0.0.1 returns false
+    // (rust-lang/rust#69772). Both properties block common SSRF bypass techniques.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return if ip.is_loopback() {
+            Ok(Cow::Borrowed(url))
+        } else {
+            Err(format!("{ip} is not a loopback address"))
+        };
+    }
+
+    // Only "localhost" is allowed — blocks DNS-service bypasses (e.g. nip.io).
+    if !host.eq_ignore_ascii_case("localhost") {
+        return Err(format!(
+            "base URL not allowed (got: {url})\n\
+             hint: allowed URLs are {}, or http://localhost:<port>",
+            ALLOWED_BASE_URLS.join(", ")
+        ));
+    }
+
+    // TOCTOU defense: resolve once, verify every address is loopback, rewrite
+    // to the resolved literal IP. ureq connects to this IP directly — no
+    // re-resolution, no DNS rebinding window.
+    let ip = resolve_localhost(host, port.unwrap_or(80))?;
+    Ok(Cow::Owned(match port {
+        Some(p) => format!("http://{ip}:{p}{path}"),
+        None => format!("http://{ip}{path}"),
+    }))
+}
+
+/// Splits a URL authority into host and optional port.
+///
+/// IPv6 addresses must be bracketed per RFC 3986 (`[::1]:8080`); the returned
+/// host is the bare address without brackets. Port 0 is rejected.
+fn parse_authority(authority: &str) -> Result<(&str, Option<u16>), String> {
+    let parse_port = |s: &str| -> Result<u16, String> {
+        match s.parse::<u16>() {
+            Ok(0) => Err("port 0 is not allowed".into()),
+            Ok(p) => Ok(p),
+            Err(_) => Err(format!("invalid port: '{s}'")),
+        }
+    };
+
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after) = rest
+            .split_once(']')
+            .ok_or("invalid IPv6 address: missing ']'")?;
+
+        match after.strip_prefix(':') {
+            Some(p) => Ok((host, Some(parse_port(p)?))),
+            None if after.is_empty() => Ok((host, None)),
+            _ => Err("invalid URL authority".into()),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, p)) => Ok((host, Some(parse_port(p)?))),
+            None => Ok((authority, None)),
+        }
+    }
+}
+
+/// Resolves a hostname and verifies ALL addresses are loopback.
+///
+/// Returns the first resolved address formatted for URL insertion (bracketed
+/// for IPv6). Checks ALL addresses — not just the first — to guard against
+/// poisoned DNS entries that mix loopback with non-loopback results.
+fn resolve_localhost(host: &str, port: u16) -> Result<String, String> {
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| {
+            format!(
+                "could not resolve '{host}': {e}\n\
+                 hint: use a literal IP instead (127.0.0.1 or [::1])"
+            )
+        })?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!("'{host}' did not resolve to any address"));
+    }
+
+    for addr in &addrs {
+        if !addr.ip().is_loopback() {
+            return Err(format!(
+                "'{host}' resolved to non-loopback address {}, rejecting for safety",
+                addr.ip()
+            ));
+        }
+    }
+
+    let ip = addrs[0].ip();
+    Ok(if ip.is_ipv4() {
+        ip.to_string()
+    } else {
+        format!("[{ip}]")
+    })
 }
 
 fn non_empty_env(var: &str) -> Option<String> {
@@ -1784,6 +1926,167 @@ mod tests {
     #[test]
     fn check_header_value_rejects_null() {
         assert!(check_header_value("X-Test", "evil\0injection").is_err());
+    }
+
+    // ── check_base_url tests ─────────────────────────────────────────
+
+    #[test]
+    fn check_base_url_allows_production_urls() {
+        assert_eq!(
+            check_base_url("https://api.search.brave.com").unwrap(),
+            "https://api.search.brave.com"
+        );
+        assert_eq!(
+            check_base_url("https://api.search.brave.software").unwrap(),
+            "https://api.search.brave.software"
+        );
+        // Trailing slash stripped
+        assert_eq!(
+            check_base_url("https://api.search.brave.com/").unwrap(),
+            "https://api.search.brave.com"
+        );
+    }
+
+    #[test]
+    fn check_base_url_accepts_ipv4_loopback() {
+        assert_eq!(
+            check_base_url("http://127.0.0.1:8080").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            check_base_url("http://127.0.0.1").unwrap(),
+            "http://127.0.0.1"
+        );
+        // Full 127.0.0.0/8 range
+        assert_eq!(
+            check_base_url("http://127.255.255.255:3000").unwrap(),
+            "http://127.255.255.255:3000"
+        );
+        // Path preserved
+        assert_eq!(
+            check_base_url("http://127.0.0.1:8080/brave").unwrap(),
+            "http://127.0.0.1:8080/brave"
+        );
+        // Trailing slash stripped (prevents double-slash in URL construction)
+        assert_eq!(
+            check_base_url("http://127.0.0.1:8080/").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        // Multiple trailing slashes all stripped
+        assert_eq!(
+            check_base_url("http://127.0.0.1:8080///").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn check_base_url_accepts_ipv6_loopback() {
+        assert_eq!(
+            check_base_url("http://[::1]:8080").unwrap(),
+            "http://[::1]:8080"
+        );
+        assert_eq!(check_base_url("http://[::1]").unwrap(), "http://[::1]");
+        assert_eq!(
+            check_base_url("http://[::1]:8080/v1").unwrap(),
+            "http://[::1]:8080/v1"
+        );
+    }
+
+    #[test]
+    fn check_base_url_accepts_localhost_hostname() {
+        // Skip if localhost doesn't resolve (unusual CI environments)
+        if ("localhost", 80u16).to_socket_addrs().is_err() {
+            return;
+        }
+        let result = check_base_url("http://localhost:8080").unwrap();
+        // TOCTOU defense: must be rewritten to a literal loopback IP
+        assert!(
+            !result.contains("localhost"),
+            "must rewrite localhost to literal IP, got: {result}"
+        );
+        assert!(
+            result.starts_with("http://127.") || result.starts_with("http://[::1]"),
+            "must resolve to loopback, got: {result}"
+        );
+        // Case-insensitive
+        assert!(check_base_url("http://LOCALHOST:8080").is_ok());
+        // No port
+        assert!(check_base_url("http://localhost").is_ok());
+        // Path preserved after localhost → IP rewrite
+        let with_path = check_base_url("http://localhost:8080/brave").unwrap();
+        assert!(
+            with_path.ends_with(":8080/brave"),
+            "path must be preserved, got: {with_path}"
+        );
+    }
+
+    #[test]
+    fn check_base_url_port_boundaries() {
+        assert!(check_base_url("http://127.0.0.1:1").is_ok());
+        assert!(check_base_url("http://127.0.0.1:65535").is_ok());
+        assert!(check_base_url("http://127.0.0.1:0").is_err()); // port 0
+        assert!(check_base_url("http://127.0.0.1:65536").is_err()); // u16 overflow
+        assert!(check_base_url("http://127.0.0.1:99999").is_err()); // u16 overflow
+        assert!(check_base_url("http://127.0.0.1:").is_err()); // empty port
+        assert!(check_base_url("http://[::1]:").is_err()); // empty port (IPv6)
+    }
+
+    #[test]
+    fn check_base_url_rejects_non_loopback_ips() {
+        assert!(check_base_url("http://192.168.1.1:8080").is_err()); // RFC 1918 private
+        assert!(check_base_url("http://10.0.0.1:8080").is_err()); // RFC 1918 private
+        assert!(check_base_url("http://0.0.0.0:8080").is_err()); // unspecified ≠ loopback
+        assert!(check_base_url("http://[::2]:8080").is_err()); // non-loopback IPv6
+        assert!(check_base_url("http://169.254.169.254:80").is_err()); // link-local / cloud metadata
+        assert!(check_base_url("http://[fe80::1]:8080").is_err()); // link-local IPv6
+    }
+
+    #[test]
+    fn check_base_url_rejects_ssrf_bypass_attempts() {
+        // Octal notation — Rust's strict Ipv4Addr parser per RFC 6943 rejects this
+        assert!(check_base_url("http://0177.0.0.1:8080").is_err());
+        // Decimal IP (2130706433 = 127.0.0.1) — not a valid Ipv4Addr, not "localhost"
+        assert!(check_base_url("http://2130706433:8080").is_err());
+        // Shorthand (127.1) — Rust rejects non-four-octet forms
+        assert!(check_base_url("http://127.1:8080").is_err());
+        // Hex IP — Rust rejects, not "localhost"
+        assert!(check_base_url("http://0x7f000001:8080").is_err());
+        // IPv4-mapped IPv6 — Ipv6Addr::is_loopback() returns false (rust-lang/rust#69772)
+        assert!(check_base_url("http://[::ffff:127.0.0.1]:8080").is_err());
+        assert!(check_base_url("http://[::ffff:7f00:1]:8080").is_err());
+        // Userinfo smuggling — @ makes the part after it the real host
+        assert!(check_base_url("http://user:pass@127.0.0.1:8080").is_err());
+        assert!(check_base_url("http://127.0.0.1@evil.com:8080").is_err());
+        // DNS service bypass — not "localhost", not a valid IP literal
+        assert!(check_base_url("http://127.0.0.1.nip.io:8080").is_err());
+        // Percent-encoded IP — code never decodes, raw string fails both parsers
+        assert!(check_base_url("http://%31%32%37.0.0.1:8080").is_err());
+        // Unicode confusable 'l' (U+217C) — eq_ignore_ascii_case is ASCII-only
+        assert!(check_base_url("http://\u{217C}ocalhost:8080").is_err());
+    }
+
+    #[test]
+    fn check_base_url_rejects_bad_scheme_or_structure() {
+        // https for localhost — must use http://
+        assert!(check_base_url("https://localhost:8080").is_err());
+        assert!(check_base_url("https://127.0.0.1:8080").is_err());
+        assert!(check_base_url("ftp://127.0.0.1:8080").is_err());
+        assert!(check_base_url("127.0.0.1:8080").is_err()); // no scheme
+        assert!(check_base_url("http://").is_err()); // empty host
+        assert!(check_base_url("not-a-url").is_err());
+        assert!(check_base_url("").is_err());
+        assert!(check_base_url("https://evil.com").is_err()); // not in allowlist
+        assert!(check_base_url("http:///127.0.0.1:8080").is_err()); // triple slash → empty host
+        assert!(check_base_url("http://127.0.0.1:8080?foo=bar").is_err()); // query contaminates port
+        assert!(check_base_url("http://127.0.0.1:8080#frag").is_err()); // fragment contaminates port
+    }
+
+    #[test]
+    fn check_base_url_rejects_malformed_ipv6() {
+        assert!(check_base_url("http://[::1").is_err()); // missing ]
+        assert!(check_base_url("http://[::1]garbage:8080").is_err()); // junk after bracket
+        assert!(check_base_url("http://[::1%25eth0]:8080").is_err()); // zone ID
+        assert!(check_base_url("http://[]:8080").is_err()); // empty brackets
     }
 
     #[test]
