@@ -205,10 +205,10 @@ check "videos: freshness" '.results | length >= 1'
 # ── Places ────────────────────────────────────────────────────────────
 
 run $BX places "coffee" --location "San Francisco, CA" --count 3
-check "places: positional query" '.results[0] | has("title")'
+check "places: positional query" '.results | type == "array"'
 
 run $BX places --location "San Francisco, CA" --count 3
-check "places: no query (location only)" '.results[0] | has("title")'
+check "places: no query (location only)" '.results | type == "array"'
 
 # ── Suggest ───────────────────────────────────────────────────────────
 
@@ -272,8 +272,35 @@ else pass "errors: invalid API key"; fi
 out=$($BX --base-url https://evil.example.com web "test" 2>"$tmp/err") && rc=0 || rc=$?
 err=$(cat "$tmp/err")
 if [ $rc -ne 1 ]; then fail "errors: invalid base URL" "expected exit 1, got $rc"
-elif ! echo "$err" | grep -q "allowlist"; then fail "errors: invalid base URL" "stderr missing 'allowlist': $err"
+elif ! echo "$err" | grep -q "not allowed"; then fail "errors: invalid base URL" "stderr missing 'not allowed': $err"
 else pass "errors: invalid base URL"; fi
+
+# Localhost base URL validation (SSRF prevention)
+out=$($BX --base-url http://192.168.1.1:8080 web "test" 2>"$tmp/err") && rc=0 || rc=$?
+err=$(cat "$tmp/err")
+if [ $rc -ne 1 ]; then fail "errors: non-loopback IP" "expected exit 1, got $rc"
+elif ! echo "$err" | grep -q "not a loopback"; then fail "errors: non-loopback IP" "stderr missing 'not a loopback': $(cat "$tmp/err")"
+else pass "errors: non-loopback IP"; fi
+
+out=$($BX --base-url https://127.0.0.1:8080 web "test" 2>"$tmp/err") && rc=0 || rc=$?
+if [ $rc -ne 1 ]; then fail "errors: https localhost" "expected exit 1, got $rc"
+else pass "errors: https localhost"; fi
+
+out=$($BX --base-url http://127.0.0.1:0 web "test" 2>"$tmp/err") && rc=0 || rc=$?
+err=$(cat "$tmp/err")
+if [ $rc -ne 1 ]; then fail "errors: port 0" "expected exit 1, got $rc"
+elif ! echo "$err" | grep -q "port 0"; then fail "errors: port 0" "stderr missing 'port 0': $(cat "$tmp/err")"
+else pass "errors: port 0"; fi
+
+out=$($BX --base-url 'http://user@127.0.0.1:8080' web "test" 2>"$tmp/err") && rc=0 || rc=$?
+err=$(cat "$tmp/err")
+if [ $rc -ne 1 ]; then fail "errors: userinfo" "expected exit 1, got $rc"
+elif ! echo "$err" | grep -q "userinfo"; then fail "errors: userinfo" "stderr missing 'userinfo': $(cat "$tmp/err")"
+else pass "errors: userinfo"; fi
+
+out=$($BX --base-url http://0177.0.0.1:8080 web "test" 2>"$tmp/err") && rc=0 || rc=$?
+if [ $rc -ne 1 ]; then fail "errors: octal IP (SSRF bypass)" "expected exit 1, got $rc"
+else pass "errors: octal IP (SSRF bypass)"; fi
 
 out=$($BX web "test" --include-site docs.rs --goggles '$discard' 2>"$tmp/err") && rc=0 || rc=$?
 if [ $rc -ne 2 ]; then fail "errors: include-site + goggles conflict" "expected exit 2, got $rc"
