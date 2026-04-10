@@ -233,7 +233,8 @@ enum Command {
     /// Update bx to the latest version
     ///
     /// Downloads and installs the latest release from GitHub.
-    /// Uses SHA256 checksum verification for integrity.
+    /// Uses SHA256 checksum verification plus pinned code signatures (Windows thumbprints,
+    /// and macOS Team ID per brave.com/signing-keys).
     ///
     /// Examples:
     ///   bx update            # download and install latest version

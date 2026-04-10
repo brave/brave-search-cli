@@ -1,3 +1,5 @@
+mod signature;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -260,8 +262,8 @@ pub fn perform_update() -> i32 {
     }
 
     // Safety: current_exe() is only used to locate the install path for self-replacement,
-    // not for trust/authorization decisions. The downloaded binary is integrity-checked via
-    // SHA256 above, so a manipulated path cannot cause execution of unverified content.
+    // not for trust/authorization decisions. The downloaded binary is verified via SHA256 and
+    // platform code-signature checks before it replaces the running executable.
     // nosemgrep: rust.lang.security.current-exe.current-exe
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -277,6 +279,7 @@ pub fn perform_update() -> i32 {
         Err(_) => current_exe,
     };
 
+    eprintln!("Verifying code signature...");
     eprintln!("Installing to {}...", current_exe.display());
 
     if let Err(e) = self_replace(&current_exe, &binary_data) {
@@ -343,6 +346,8 @@ fn self_replace(current_exe: &Path, new_binary: &[u8]) -> io::Result<()> {
         return Err(e);
     }
 
+    signature::verify_release_binary(&tmp_path).map_err(io::Error::other)?;
+
     // Atomic rename — old inode stays alive until the running process exits.
     if let Err(e) = fs::rename(&tmp_path, current_exe) {
         fs::remove_file(&tmp_path).ok();
@@ -368,6 +373,8 @@ fn self_replace(current_exe: &Path, new_binary: &[u8]) -> io::Result<()> {
 
     // Write the new binary to a temp file
     fs::write(&tmp_path, new_binary)?;
+
+    signature::verify_release_binary(&tmp_path).map_err(io::Error::other)?;
 
     // Rename the currently running exe out of the way (Windows allows renaming a locked file)
     if let Err(e) = fs::rename(current_exe, &old_path) {
