@@ -103,11 +103,21 @@ fn verify_windows(path: &Path) -> Result<(), String> {
         )
     };
 
-    let pin_result = if status == 0 {
-        verify_windows_signer_pin(data.hWVTStateData)
-    } else {
-        Ok(())
-    };
+    if status != 0 {
+        data.dwStateAction = WTD_STATEACTION_CLOSE;
+        unsafe {
+            WinVerifyTrust(
+                std::ptr::null_mut(),
+                &mut action_id,
+                &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+            );
+        }
+        return Err(format!(
+            "Windows Authenticode verification failed (WinVerifyTrust returned {status})"
+        ));
+    }
+
+    let pin_result = verify_windows_signer_pin(data.hWVTStateData);
 
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     unsafe {
@@ -116,12 +126,6 @@ fn verify_windows(path: &Path) -> Result<(), String> {
             &mut action_id,
             &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
         );
-    }
-
-    if status != 0 {
-        return Err(format!(
-            "Windows Authenticode verification failed (WinVerifyTrust returned {status})"
-        ));
     }
 
     pin_result
@@ -262,7 +266,11 @@ fn verify_macos(path: &Path) -> Result<(), String> {
         .output()
         .map_err(|e| format!("codesign -dv: failed to run: {e}"))?;
 
-    let info = String::from_utf8_lossy(&display.stderr);
+    // `codesign` may print `-dv` details on stderr or stdout depending on version;
+    // scan both so TeamIdentifier parsing is not fragile to stream choice.
+    let stderr = String::from_utf8_lossy(&display.stderr);
+    let stdout = String::from_utf8_lossy(&display.stdout);
+    let info = format!("{stderr}\n{stdout}");
     let team_id = parse_codesign_team_identifier(&info).ok_or_else(|| {
         format!(
             "could not find TeamIdentifier in codesign output; expected {MACOS_EXPECTED_TEAM_ID} \
@@ -281,8 +289,8 @@ fn verify_macos(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn parse_codesign_team_identifier(codesign_stderr: &str) -> Option<String> {
-    for line in codesign_stderr.lines() {
+fn parse_codesign_team_identifier(codesign_output: &str) -> Option<String> {
+    for line in codesign_output.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("TeamIdentifier=") {
             let value = value.trim();

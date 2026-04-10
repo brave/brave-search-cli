@@ -1,11 +1,10 @@
 mod signature;
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::path::Path;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -36,35 +35,6 @@ pub const PLATFORM: &str = "windows-arm64";
 pub const PLATFORM: &str = "unsupported";
 
 const BINARY_EXT: &str = if cfg!(windows) { ".exe" } else { "" };
-
-// ── Update-check state file ──────────────────────────────────────────
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct UpdateCheckState {
-    last_check_epoch: Option<u64>,
-    latest_version: Option<String>,
-}
-
-fn state_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join("update-check.json"))
-}
-
-fn save_state(state: &UpdateCheckState) {
-    let Some(path) = state_path() else { return };
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).ok();
-    }
-    if let Ok(json) = serde_json::to_string(state) {
-        fs::write(path, json).ok();
-    }
-}
-
-fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 // ── Version comparison ───────────────────────────────────────────────
 
@@ -168,11 +138,6 @@ pub fn check_for_update() -> i32 {
     match resolve_latest_version(30) {
         Ok(tag) => {
             let version = tag.strip_prefix('v').unwrap_or(&tag);
-            save_state(&UpdateCheckState {
-                last_check_epoch: Some(now_epoch()),
-                latest_version: Some(version.to_string()),
-            });
-
             if is_newer(CURRENT_VERSION, version) {
                 eprintln!("v{version} is available (current: v{CURRENT_VERSION})");
                 eprintln!("Run `bx update` to upgrade.");
@@ -279,7 +244,7 @@ pub fn perform_update() -> i32 {
         Err(_) => current_exe,
     };
 
-    eprintln!("Verifying code signature...");
+    eprintln!("Preparing install and verifying code signature...");
     eprintln!("Installing to {}...", current_exe.display());
 
     if let Err(e) = self_replace(&current_exe, &binary_data) {
@@ -291,11 +256,6 @@ pub fn perform_update() -> i32 {
         }
         return 1;
     }
-
-    save_state(&UpdateCheckState {
-        last_check_epoch: Some(now_epoch()),
-        latest_version: Some(version.to_string()),
-    });
 
     eprintln!("bx updated to v{version} successfully.");
     0
@@ -483,29 +443,6 @@ mod tests {
         // PLATFORM is "unsupported" on targets without pre-built binaries
         // (e.g. darwin-amd64). The value is always a static string.
         assert!(!PLATFORM.is_empty());
-    }
-
-    #[test]
-    fn state_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        let state = UpdateCheckState {
-            last_check_epoch: Some(1234567890),
-            latest_version: Some("1.3.0".into()),
-        };
-        let json = serde_json::to_string(&state).unwrap();
-        fs::write(&path, &json).unwrap();
-        let loaded: UpdateCheckState =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(loaded.last_check_epoch, Some(1234567890));
-        assert_eq!(loaded.latest_version.as_deref(), Some("1.3.0"));
-    }
-
-    #[test]
-    fn state_default_is_empty() {
-        let state = UpdateCheckState::default();
-        assert!(state.last_check_epoch.is_none());
-        assert!(state.latest_version.is_none());
     }
 
     #[test]

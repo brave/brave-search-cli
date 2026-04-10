@@ -440,8 +440,6 @@ bx update --check  # check for a newer version without installing
 
 The downloaded binary is verified with a SHA-256 checksum, then **Windows** and **macOS** releases are checked against Brave’s published code-signing pins ([signing keys](https://brave.com/signing-keys/)) before replacement. **Linux** builds rely on the checksum only for now.
 
-`bx update` and `bx update --check` may write `update-check.json` next to your config directory to record the last resolved version.
-
 ## Building from Source
 
 ```bash
