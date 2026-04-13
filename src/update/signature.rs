@@ -16,7 +16,7 @@ const WINDOWS_ALLOWED_SIGNER_SHA1: &[&str] = &[
     "F8AC5F11DE7E26383B7A389FC19A2613835799D7",
 ];
 
-/// Apple Developer Team ID for Brave’s Developer ID Application signing identity.
+/// Apple Developer Team ID for Brave's Developer ID Application signing identity.
 /// Keep in sync with <https://brave.com/signing-keys/#macos> if/when details change.
 #[cfg(target_os = "macos")]
 const MACOS_EXPECTED_TEAM_ID: &str = "KL8N8XSYF4";
@@ -42,114 +42,60 @@ pub fn verify_release_binary(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
-use windows_sys::Win32::Security::Cryptography::{
-    CERT_CONTEXT, CERT_SHA1_HASH_PROP_ID, CertGetCertificateContextProperty,
-};
+// ── Windows: PowerShell Get-AuthenticodeSignature ───────────────────
 
 #[cfg(windows)]
 fn verify_windows(path: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Security::WinTrust::{
-        WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
-        WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
-        WTD_UI_NONE, WinVerifyTrust,
-    };
+    use std::process::Command;
 
     let path = path
         .canonicalize()
         .map_err(|e| format!("cannot canonicalize path for signature check: {e}"))?;
 
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    // Path is passed via env var to avoid shell escaping issues.
+    // -LiteralPath treats $env:BX_VERIFY_PATH as a literal path (no wildcard expansion).
+    let output = Command::new("powershell.exe")
+        .env("BX_VERIFY_PATH", &path)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$s = Get-AuthenticodeSignature -LiteralPath $env:BX_VERIFY_PATH; \
+             $s.Status; \
+             if ($s.SignerCertificate) { $s.SignerCertificate.Thumbprint }",
+        ])
+        .output()
+        .map_err(|e| format!("powershell: failed to verify signature: {e}"))?;
 
-    let mut file_info = WINTRUST_FILE_INFO {
-        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
-        pcwszFilePath: wide.as_ptr(),
-        hFile: INVALID_HANDLE_VALUE,
-        pgKnownSubject: std::ptr::null_mut(),
-    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let status = lines.next().unwrap_or("").trim();
+    let thumbprint = lines.next().unwrap_or("").trim();
 
-    let mut action_id = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-
-    let mut data = WINTRUST_DATA {
-        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
-        pPolicyCallbackData: std::ptr::null_mut(),
-        pSIPClientData: std::ptr::null_mut(),
-        dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_NONE,
-        dwUnionChoice: WTD_CHOICE_FILE,
-        Anonymous: WINTRUST_DATA_0 {
-            pFile: &mut file_info,
-        },
-        dwStateAction: WTD_STATEACTION_VERIFY,
-        hWVTStateData: std::ptr::null_mut(),
-        pwszURLReference: std::ptr::null_mut(),
-        dwProvFlags: 0,
-        dwUIContext: 0,
-        pSignatureSettings: std::ptr::null_mut(),
-    };
-
-    // SAFETY: WinTrust FFI; `wide` and `file_info` remain valid for both calls.
-    let status = unsafe {
-        WinVerifyTrust(
-            std::ptr::null_mut(),
-            &mut action_id,
-            &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
-        )
-    };
-
-    if status != 0 {
-        data.dwStateAction = WTD_STATEACTION_CLOSE;
-        unsafe {
-            WinVerifyTrust(
-                std::ptr::null_mut(),
-                &mut action_id,
-                &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
-            );
-        }
+    if status != "Valid" {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if !stderr.trim().is_empty() {
+            format!(" ({})", stderr.trim())
+        } else {
+            String::new()
+        };
         return Err(format!(
-            "Windows Authenticode verification failed (WinVerifyTrust returned {status})"
+            "Windows Authenticode verification failed (status: {status}){detail}"
         ));
     }
 
-    let pin_result = verify_windows_signer_pin(data.hWVTStateData);
-
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    unsafe {
-        WinVerifyTrust(
-            std::ptr::null_mut(),
-            &mut action_id,
-            &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+    if thumbprint.is_empty() {
+        return Err(
+            "could not read signing certificate thumbprint from Authenticode signature".into(),
         );
     }
 
-    pin_result
-}
-
-#[cfg(windows)]
-fn verify_windows_signer_pin(h_state: *mut core::ffi::c_void) -> Result<(), String> {
-    let Some(ctx) = leaf_cert_context_from_trust_state(h_state) else {
-        return Err(
-            "could not read signing certificate from WinTrust state after successful verification"
-                .into(),
-        );
-    };
-
-    let thumb = cert_sha1_thumbprint_hex(ctx).ok_or_else(|| {
-        "could not read SHA1 thumbprint for signing certificate (pin check failed)".to_string()
-    })?;
-
     let ok = WINDOWS_ALLOWED_SIGNER_SHA1
         .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(&thumb));
+        .any(|allowed| allowed.eq_ignore_ascii_case(thumbprint));
     if !ok {
         return Err(format!(
-            "signing certificate SHA1 thumbprint is not in the Brave allow-list (got {thumb}); \
+            "signing certificate SHA1 thumbprint is not in the Brave allow-list (got {thumbprint}); \
              update `bx` or see https://brave.com/signing-keys/#windows"
         ));
     }
@@ -157,78 +103,7 @@ fn verify_windows_signer_pin(h_state: *mut core::ffi::c_void) -> Result<(), Stri
     Ok(())
 }
 
-#[cfg(windows)]
-fn leaf_cert_context_from_trust_state(
-    h_state: *mut core::ffi::c_void,
-) -> Option<*const CERT_CONTEXT> {
-    use windows_sys::Win32::Foundation::FALSE;
-    use windows_sys::Win32::Security::WinTrust::{
-        WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData,
-    };
-
-    if h_state.is_null() {
-        return None;
-    }
-
-    // SAFETY: `h_state` comes from WinVerifyTrust after WTD_STATEACTION_VERIFY.
-    unsafe {
-        let prov = WTHelperProvDataFromStateData(h_state);
-        if prov.is_null() {
-            return None;
-        }
-
-        let sgnr = WTHelperGetProvSignerFromChain(prov, 0, FALSE, 0);
-        if sgnr.is_null() {
-            return None;
-        }
-
-        let prov_cert = WTHelperGetProvCertFromChain(sgnr, 0);
-        if prov_cert.is_null() {
-            return None;
-        }
-
-        let c = (*prov_cert).pCert;
-        if c.is_null() {
-            return None;
-        }
-        Some(c)
-    }
-}
-
-#[cfg(windows)]
-fn cert_sha1_thumbprint_hex(ctx: *const CERT_CONTEXT) -> Option<String> {
-    let mut cb: u32 = 0;
-    unsafe {
-        CertGetCertificateContextProperty(
-            ctx,
-            CERT_SHA1_HASH_PROP_ID,
-            std::ptr::null_mut(),
-            &mut cb,
-        );
-    }
-    if cb == 0 || cb > 256 {
-        return None;
-    }
-    let mut buf = vec![0u8; cb as usize];
-    let ok = unsafe {
-        CertGetCertificateContextProperty(
-            ctx,
-            CERT_SHA1_HASH_PROP_ID,
-            buf.as_mut_ptr().cast(),
-            &mut cb,
-        )
-    };
-    if ok == 0 {
-        return None;
-    }
-    buf.truncate(cb as usize);
-    Some(
-        buf.iter()
-            .map(|b| format!("{b:02X}"))
-            .collect::<Vec<_>>()
-            .concat(),
-    )
-}
+// ── macOS: codesign ─────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
 fn verify_macos(path: &Path) -> Result<(), String> {
@@ -266,17 +141,22 @@ fn verify_macos(path: &Path) -> Result<(), String> {
         .output()
         .map_err(|e| format!("codesign -dv: failed to run: {e}"))?;
 
-    // `codesign` may print `-dv` details on stderr or stdout depending on version;
-    // scan both so TeamIdentifier parsing is not fragile to stream choice.
+    if !display.status.success() {
+        let stderr = String::from_utf8_lossy(&display.stderr);
+        return Err(format!("codesign -dv failed: {}", stderr.trim()));
+    }
+
+    // codesign prints -dv details to stderr (sometimes stdout); search both.
     let stderr = String::from_utf8_lossy(&display.stderr);
     let stdout = String::from_utf8_lossy(&display.stdout);
-    let info = format!("{stderr}\n{stdout}");
-    let team_id = parse_codesign_team_identifier(&info).ok_or_else(|| {
-        format!(
-            "could not find TeamIdentifier in codesign output; expected {MACOS_EXPECTED_TEAM_ID} \
-             (https://brave.com/signing-keys/)"
-        )
-    })?;
+    let team_id = parse_codesign_team_identifier(&stderr)
+        .or_else(|| parse_codesign_team_identifier(&stdout))
+        .ok_or_else(|| {
+            format!(
+                "could not find TeamIdentifier in codesign output; expected {MACOS_EXPECTED_TEAM_ID} \
+                 (https://brave.com/signing-keys/)"
+            )
+        })?;
 
     if team_id != MACOS_EXPECTED_TEAM_ID {
         return Err(format!(
@@ -288,30 +168,62 @@ fn verify_macos(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn parse_codesign_team_identifier(codesign_output: &str) -> Option<String> {
+// ── Shared parsing ──────────────────────────────────────────────────
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_codesign_team_identifier(codesign_output: &str) -> Option<&str> {
     for line in codesign_output.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("TeamIdentifier=") {
             let value = value.trim();
             if !value.is_empty() {
-                return Some(value.to_string());
+                return Some(value);
             }
         }
     }
     None
 }
 
+// ── Tests ───────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
     #[test]
     fn parse_team_identifier_finds_value() {
         let sample = "Identifier=org.example.app\nTeamIdentifier=KL8N8XSYF4\n";
         assert_eq!(
-            super::parse_codesign_team_identifier(sample).as_deref(),
+            super::parse_codesign_team_identifier(sample),
             Some("KL8N8XSYF4")
         );
+    }
+
+    #[test]
+    fn parse_team_identifier_missing() {
+        assert_eq!(
+            super::parse_codesign_team_identifier("Identifier=foo\nFormat=Mach-O\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_team_identifier_empty_value() {
+        assert_eq!(
+            super::parse_codesign_team_identifier("TeamIdentifier=\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_team_identifier_whitespace() {
+        assert_eq!(
+            super::parse_codesign_team_identifier("  TeamIdentifier=  KL8N8XSYF4  \n"),
+            Some("KL8N8XSYF4")
+        );
+    }
+
+    #[test]
+    fn parse_team_identifier_empty_input() {
+        assert_eq!(super::parse_codesign_team_identifier(""), None);
     }
 
     #[cfg(windows)]
@@ -319,7 +231,7 @@ mod tests {
     fn windows_allowed_thumbprints_are_nonempty_hex() {
         for t in super::WINDOWS_ALLOWED_SIGNER_SHA1 {
             assert_eq!(t.len(), 40);
-            assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
         }
     }
 }

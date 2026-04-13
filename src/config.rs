@@ -19,7 +19,7 @@ pub struct Config {
 // ── Paths ────────────────────────────────────────────────────────────
 
 /// Returns the config directory: ~/.config/brave-search/ (or platform equivalent).
-pub(crate) fn config_dir() -> Option<PathBuf> {
+fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("brave-search"))
 }
 

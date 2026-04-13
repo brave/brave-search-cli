@@ -58,22 +58,11 @@ fn is_newer(current: &str, latest: &str) -> bool {
 
 // ── Version resolution ───────────────────────────────────────────────
 
-fn update_agent(timeout_secs: u64) -> ureq::Agent {
+fn make_agent(timeout_secs: u64, max_redirects: u32) -> ureq::Agent {
     ureq::Agent::new_with_config(
         ureq::config::Config::builder()
             .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(timeout_secs)))
-            .user_agent(concat!("bx/", env!("CARGO_PKG_VERSION")))
-            .build(),
-    )
-}
-
-fn redirecting_agent(timeout_secs: u64) -> ureq::Agent {
-    ureq::Agent::new_with_config(
-        ureq::config::Config::builder()
-            .http_status_as_error(false)
-            .max_redirects(10)
+            .max_redirects(max_redirects)
             .timeout_global(Some(Duration::from_secs(timeout_secs)))
             .user_agent(concat!("bx/", env!("CARGO_PKG_VERSION")))
             .build(),
@@ -83,7 +72,7 @@ fn redirecting_agent(timeout_secs: u64) -> ureq::Agent {
 /// Resolves the latest release tag by following the /releases/latest redirect.
 fn resolve_latest_version(timeout: u64) -> Result<String, String> {
     let url = format!("{RELEASES_URL}/latest");
-    let resp = update_agent(timeout)
+    let resp = make_agent(timeout, 0)
         .head(&url)
         .call()
         .map_err(|e| format!("network error: {e}"))?;
@@ -105,7 +94,7 @@ fn resolve_latest_version(timeout: u64) -> Result<String, String> {
     // GitHub sometimes returns 200 with the HTML page instead of redirecting
     // for HEAD requests. Fall back to the API endpoint.
     let api_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let resp = update_agent(timeout)
+    let resp = make_agent(timeout, 0)
         .get(&api_url)
         .header("Accept", "application/vnd.github+json")
         .call()
@@ -116,13 +105,8 @@ fn resolve_latest_version(timeout: u64) -> Result<String, String> {
         return Err(format!("GitHub API returned HTTP {status}"));
     }
 
-    let body: String = resp
-        .into_body()
-        .read_to_string()
+    let json: serde_json::Value = serde_json::from_reader(resp.into_body().into_reader())
         .map_err(|e| format!("failed to read response: {e}"))?;
-
-    let json: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("invalid JSON: {e}"))?;
 
     json["tag_name"]
         .as_str()
@@ -141,11 +125,10 @@ pub fn check_for_update() -> i32 {
             if is_newer(CURRENT_VERSION, version) {
                 eprintln!("v{version} is available (current: v{CURRENT_VERSION})");
                 eprintln!("Run `bx update` to upgrade.");
-                0
             } else {
                 eprintln!("bx v{CURRENT_VERSION} is already up to date.");
-                0
             }
+            0
         }
         Err(e) => {
             eprintln!("failed");
@@ -209,7 +192,7 @@ pub fn perform_update() -> i32 {
     // Verify checksum
     let expected = String::from_utf8_lossy(&checksum_data);
     let expected = expected.split_whitespace().next().unwrap_or("").trim();
-    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         eprintln!("error: invalid checksum format in {checksum_name}");
         return 1;
     }
@@ -218,7 +201,7 @@ pub fn perform_update() -> i32 {
     hasher.update(&binary_data);
     let actual = format!("{:x}", hasher.finalize());
 
-    if actual != expected.to_lowercase() {
+    if !actual.eq_ignore_ascii_case(expected) {
         eprintln!("error: checksum verification failed!");
         eprintln!("  expected: {expected}");
         eprintln!("  got:      {actual}");
@@ -264,7 +247,7 @@ pub fn perform_update() -> i32 {
 const MAX_DOWNLOAD_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 fn download_file(url: &str) -> Result<Vec<u8>, String> {
-    let resp = redirecting_agent(60)
+    let resp = make_agent(60, 10)
         .get(url)
         .call()
         .map_err(|e| format!("network error: {e}"))?;
@@ -306,7 +289,10 @@ fn self_replace(current_exe: &Path, new_binary: &[u8]) -> io::Result<()> {
         return Err(e);
     }
 
-    signature::verify_release_binary(&tmp_path).map_err(io::Error::other)?;
+    if let Err(e) = signature::verify_release_binary(&tmp_path) {
+        fs::remove_file(&tmp_path).ok();
+        return Err(io::Error::other(e));
+    }
 
     // Atomic rename — old inode stays alive until the running process exits.
     if let Err(e) = fs::rename(&tmp_path, current_exe) {
@@ -322,19 +308,18 @@ fn self_replace(current_exe: &Path, new_binary: &[u8]) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("exe has no parent directory"))?;
 
-    let old_path = dir.join(format!(
-        "{}.old",
-        current_exe
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-    ));
+    let mut old_name = current_exe.file_name().unwrap_or_default().to_os_string();
+    old_name.push(".old");
+    let old_path = dir.join(old_name);
     let tmp_path = dir.join(".bx.update.tmp.exe");
 
     // Write the new binary to a temp file
     fs::write(&tmp_path, new_binary)?;
 
-    signature::verify_release_binary(&tmp_path).map_err(io::Error::other)?;
+    if let Err(e) = signature::verify_release_binary(&tmp_path) {
+        fs::remove_file(&tmp_path).ok();
+        return Err(io::Error::other(e));
+    }
 
     // Rename the currently running exe out of the way (Windows allows renaming a locked file)
     if let Err(e) = fs::rename(current_exe, &old_path) {
@@ -376,10 +361,8 @@ pub fn cleanup_old_binary() {
     };
     let exe = exe.canonicalize().unwrap_or(exe);
     let Some(dir) = exe.parent() else { return };
-    let old_name = format!(
-        "{}.old",
-        exe.file_name().unwrap_or_default().to_string_lossy()
-    );
+    let mut old_name = exe.file_name().unwrap_or_default().to_os_string();
+    old_name.push(".old");
     let old_path = dir.join(old_name);
     if old_path.exists() {
         fs::remove_file(&old_path).ok();
@@ -410,6 +393,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_semver_prerelease_rejected() {
+        assert_eq!(parse_semver("1.2.3-beta"), None);
+        assert_eq!(parse_semver("1.2.3-rc.1"), None);
+        assert_eq!(parse_semver("v1.0.0-alpha"), None);
+    }
+
+    #[test]
+    fn parse_semver_extra_dots_rejected() {
+        assert_eq!(parse_semver("1.2.3.4"), None);
+    }
+
+    #[test]
     fn is_newer_basic() {
         assert!(is_newer("1.0.0", "1.0.1"));
         assert!(is_newer("1.0.0", "1.1.0"));
@@ -429,6 +424,13 @@ mod tests {
         assert!(is_newer("v1.0.0", "v1.0.1"));
         assert!(is_newer("1.0.0", "v1.0.1"));
         assert!(is_newer("v1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn is_newer_prerelease_not_newer() {
+        // Pre-release tags fail to parse, so is_newer returns false
+        assert!(!is_newer("1.0.0", "1.0.1-rc.1"));
+        assert!(!is_newer("1.0.0-beta", "1.0.1"));
     }
 
     #[test]
