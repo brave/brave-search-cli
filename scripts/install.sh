@@ -125,13 +125,20 @@ main() {
     fi
 
     mkdir -p "$install_dir"
-    # Atomic install with permissions (no cp+chmod race).
-    install -m 755 "${tmp_dir}/${binary_name}" "${install_dir}/${BIN}"
 
-    if ! "${install_dir}/${BIN}" --version >/dev/null 2>&1; then
-        error "installed binary failed to execute" \
+    # Verify the new binary executes BEFORE replacing any existing install.
+    chmod +x "${tmp_dir}/${binary_name}"
+    if ! "${tmp_dir}/${binary_name}" --version >/dev/null 2>&1; then
+        error "downloaded binary failed to execute" \
+              "existing installation (if any) has not been modified" \
               "this may indicate a platform mismatch or a corrupted download"
     fi
+
+    # Atomic replacement: stage in install dir (same filesystem), then rename.
+    # mv on the same filesystem is an atomic rename — the old binary is either
+    # fully present or fully replaced, never partially written.
+    install -m 755 "${tmp_dir}/${binary_name}" "${install_dir}/${BIN}.tmp"
+    mv -f "${install_dir}/${BIN}.tmp" "${install_dir}/${BIN}"
 
     # GitHub Actions: add to $GITHUB_PATH so subsequent steps find bx.
     if [ -n "${GITHUB_ACTIONS:-}" ] && [ -n "${GITHUB_PATH:-}" ]; then
