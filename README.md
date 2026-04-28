@@ -297,6 +297,15 @@ Only loopback addresses are allowed for `http://` URLs — non-loopback IPs and 
 
 ## Commands
 
+### Utility Commands
+
+| Command | Description |
+|---------|-------------|
+| `config` | Manage configuration — `set-key`, `show-key`, `show`, `path` |
+| `update` | Self-update to the latest release (or `--check` to check only) |
+
+### Search Commands
+
 | Command | Description | Output Shape |
 |---------|-------------|--------------|
 | `context` | **RAG/LLM grounding** — pre-extracted web content | `.grounding.generic[]` → `{url, title, snippets[]}` |
@@ -310,9 +319,8 @@ Only loopback addresses are allowed for `http://` URLs — non-loopback IPs and 
 | `spellcheck` | Spell-check a query | `.results[0].query` |
 | `pois` | POI details by ID | (use IDs from `places`) |
 | `descriptions` | AI-generated POI descriptions | `.results[].description` |
-| `config` | Manage configuration | `set-key`, `show-key`, `show`, `path` |
 
-## Usage Examples
+### Usage Examples
 
 ```bash
 # Default subcommand is context
@@ -420,6 +428,17 @@ hint: retry after a short delay, or upgrade plan for higher rate limits
 ```
 
 Exit codes are differentiated — see [Exit Codes](#exit-codes) above.
+
+## Updating
+
+`bx` can update itself in place — no package manager required.
+
+```bash
+bx update          # download and install the latest version
+bx update --check  # check for a newer version without installing
+```
+
+The downloaded binary is verified with a SHA-256 checksum, then **Windows** and **macOS** releases are checked against Brave’s published code-signing pins ([signing keys](https://brave.com/signing-keys/)) before replacement. **Linux** builds rely on the checksum only for now.
 
 ## Building from Source
 
