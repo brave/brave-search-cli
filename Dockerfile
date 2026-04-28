@@ -2,7 +2,7 @@ ARG TARGET=x86_64-unknown-linux-musl
 
 # Pin by digest to prevent supply-chain tag-swap attacks. Renovate auto-updates.
 # Refresh: docker pull rust:1-slim && docker inspect --format='{{index .RepoDigests 0}}' rust:1-slim
-FROM rust:1-slim@sha256:cf09adf8c3ebaba10779e5c23ff7fe4df4cccdab8a91f199b0c142c53fef3e1a AS builder
+FROM rust:1-slim@sha256:81099830a1e1d244607b9a7a30f3ff6ecadc52134a933b4635faba24f52840c9 AS builder
 ARG TARGET
 
 RUN apt-get update && apt-get install -y musl-tools gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu && rm -rf /var/lib/apt/lists/*
