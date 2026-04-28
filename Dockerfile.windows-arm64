@@ -2,7 +2,7 @@ ARG TARGET=aarch64-pc-windows-gnullvm
 
 # Pin by digest to prevent supply-chain tag-swap attacks.
 # Renovate will auto-update this digest when new versions are published.
-FROM ghcr.io/rust-cross/cargo-zigbuild:latest@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c AS builder
+FROM ghcr.io/rust-cross/cargo-zigbuild:latest@sha256:b66e2a5063921aca74fc53248d75d187b7499fe1e076d78eb7d87ab1dbc52f6a AS builder
 ARG TARGET
 
 RUN rustup target add "$TARGET"
