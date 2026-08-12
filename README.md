@@ -16,6 +16,11 @@ curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.ps1 | iex"
 ```
 
+**npm**
+```bash
+npm install -g @brave/brave-search-cli
+```
+
 ```bash
 bx config set-key YOUR_API_KEY    # get a key at https://api-dashboard.search.brave.com
 bx "your search query"            # shorthand for: bx context "your search query"

@@ -1,0 +1,114 @@
+name: Publish npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish (e.g. v1.5.0). Leave blank to use the latest release."
+        required: false
+        type: string
+      dry_run:
+        description: "Run npm publish with --dry-run (packs and validates everything, publishes nothing)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve release
+        id: release
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.version }}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --json tagName -q .tagName)
+          fi
+          gh release view "$tag" >/dev/null
+
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::unexpected tag format: $tag"; exit 1 ;;
+          esac
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download and stage platform binaries
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+          tag="${{ steps.release.outputs.tag }}"
+          tmp=$(mktemp -d)
+
+          stage() {
+            local release_asset="$1" npm_platform="$2" bin_name="$3"
+            local asset="bx-${version}-${release_asset}"
+            [ "$bin_name" = "bx.exe" ] && asset="${asset}.exe"
+
+            gh release download "$tag" --dir "$tmp" --clobber --pattern "$asset"
+
+            mkdir -p "npm/platforms/${npm_platform}/bin"
+            cp "$tmp/$asset" "npm/platforms/${npm_platform}/bin/${bin_name}"
+            chmod +x "npm/platforms/${npm_platform}/bin/${bin_name}"
+          }
+
+          stage linux-amd64   linux-x64    bx
+          stage linux-arm64   linux-arm64  bx
+          stage darwin-arm64  darwin-arm64 bx
+          stage windows-amd64 win32-x64    bx.exe
+          stage windows-arm64 win32-arm64  bx.exe
+
+      - name: Set package versions
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+
+          for dir in npm/platforms/*/; do
+            jq --arg v "$version" '.version = $v' "${dir}package.json" > "${dir}package.json.tmp"
+            mv "${dir}package.json.tmp" "${dir}package.json"
+          done
+
+          jq --arg v "$version" \
+             '.version = $v | .optionalDependencies |= with_entries(.value = $v)' \
+             npm/brave-search-cli/package.json > npm/brave-search-cli/package.json.tmp
+          mv npm/brave-search-cli/package.json.tmp npm/brave-search-cli/package.json
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          flags=(--no-git-checks --access public)
+          [ "$DRY_RUN" = "true" ] && flags+=(--dry-run)
+          for dir in npm/platforms/*/; do
+            (cd "$dir" && npm publish "${flags[@]}")
+          done
+
+      # Published last so its optionalDependencies always resolve to
+      # already-published platform package versions.
+      - name: Publish main package
+        working-directory: npm/brave-search-cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          flags=(--no-git-checks --access public)
+          [ "$DRY_RUN" = "true" ] && flags+=(--dry-run)
+          npm publish "${flags[@]}"
