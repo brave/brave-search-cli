@@ -30,6 +30,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Only the binaries come from the release tag; the npm package files come
+      # from the dispatched ref (tags up to v1.5.0 predate npm/).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -64,48 +66,39 @@ jobs:
           tmp=$(mktemp -d)
 
           stage() {
-            local release_asset="$1" npm_platform="$2" bin_name="$3"
-            local asset="bx-${VERSION}-${release_asset}"
-            [ "$bin_name" = "bx.exe" ] && asset="${asset}.exe"
+            local target="$1" npm_platform="$2" ext=""
+            case "$target" in windows-*) ext=".exe" ;; esac
+            local asset="bx-${VERSION}-${target}${ext}"
 
-            # Download the binary alongside its checksum, then verify integrity
-            # before we trust it enough to publish to npm.
-            gh release download "$TAG" --dir "$tmp" --clobber \
+            # Catches a corrupt or truncated download, not tampering: the
+            # checksum ships in the same release as the binary.
+            gh release download "$TAG" --dir "$tmp" \
               --pattern "$asset" --pattern "$asset.sha256"
+            (cd "$tmp" && sha256sum -c "$asset.sha256")
 
-            local expected actual
-            expected=$(cut -d' ' -f1 < "$tmp/$asset.sha256")
-            actual=$(sha256sum "$tmp/$asset" | cut -d' ' -f1)
-            if [ "$expected" != "$actual" ]; then
-              echo "::error::checksum mismatch for $asset (expected $expected, got $actual)"
-              exit 1
-            fi
-
-            mkdir -p "npm/platforms/${npm_platform}/bin"
-            cp "$tmp/$asset" "npm/platforms/${npm_platform}/bin/${bin_name}"
-            chmod +x "npm/platforms/${npm_platform}/bin/${bin_name}"
+            # Platform packages declare no "bin", so npm never chmods them on
+            # install — the executable bit has to ship in the tarball.
+            install -Dm755 "$tmp/$asset" "npm/platforms/${npm_platform}/bin/bx${ext}"
           }
 
-          stage linux-amd64   linux-x64    bx
-          stage linux-arm64   linux-arm64  bx
-          stage darwin-arm64  darwin-arm64 bx
-          stage windows-amd64 win32-x64    bx.exe
-          stage windows-arm64 win32-arm64  bx.exe
+          stage linux-amd64   linux-x64
+          stage linux-arm64   linux-arm64
+          stage darwin-arm64  darwin-arm64
+          stage windows-amd64 win32-x64
+          stage windows-arm64 win32-arm64
 
-      - name: Stage license into packages
-        run: |
-          set -euo pipefail
-          # npm ships a LICENSE file automatically when one is present, so drop
-          # the repository license into every package we publish.
-          for dir in npm/platforms/*/ npm/brave-search-cli/; do
-            cp LICENSE "$dir"
-          done
+          # Proves the exec bit survived staging and the asset matches the tag.
+          npm/platforms/linux-x64/bin/bx --version | grep -qF "$VERSION"
 
-      - name: Set package versions
+      - name: Stage license and versions into packages
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
+          # npm ships a LICENSE file automatically when one is present.
+          for dir in npm/platforms/*/ npm/brave-search-cli/; do
+            cp LICENSE "$dir"
+          done
 
           for dir in npm/platforms/*/; do
             jq --arg v "$VERSION" '.version = $v' "${dir}package.json" > "${dir}package.json.tmp"

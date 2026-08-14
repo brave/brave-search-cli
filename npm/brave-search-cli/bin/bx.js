@@ -46,11 +46,10 @@ if (result.error) {
   fail(`failed to run "${binPath}": ${result.error.message}`)
 }
 
-// If bx was killed by a signal, exit with the shell's 128 + signal convention;
-// otherwise pass through its exit code.
+// Killed by a signal: use the shell's 128 + N convention.
 if (result.signal) {
   const signalNumber = signals[result.signal]
   process.exit(signalNumber ? 128 + signalNumber : 1)
 }
 
-process.exit(result.status === null ? 1 : result.status)
+process.exit(result.status ?? 1)
