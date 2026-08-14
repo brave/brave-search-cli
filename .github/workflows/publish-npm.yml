@@ -20,6 +20,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: npm-publish
+    permissions:
+      contents: read # gh release download
+      id-token: write # npm provenance attestation
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -101,27 +104,38 @@ jobs:
              npm/brave-search-cli/package.json > npm/brave-search-cli/package.json.tmp
           mv npm/brave-search-cli/package.json.tmp npm/brave-search-cli/package.json
 
-      - name: Publish platform packages
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          flags=(--no-git-checks --access public)
-          [ "$DRY_RUN" = "true" ] && flags+=(--dry-run)
-          for dir in npm/platforms/*/; do
-            (cd "$dir" && npm publish "${flags[@]}")
-          done
 
-      # Published last so its optionalDependencies always resolve to
-      # already-published platform package versions.
-      - name: Publish main package
-        working-directory: npm/brave-search-cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          set -euo pipefail
           flags=(--no-git-checks --access public)
-          [ "$DRY_RUN" = "true" ] && flags+=(--dry-run)
-          npm publish "${flags[@]}"
+          if [ "$DRY_RUN" = "true" ]; then
+            flags+=(--dry-run)
+          else
+            flags+=(--provenance) # signed build attestation; needs id-token: write
+          fi
+
+          # Publish one package directory, skipping it when that exact version
+          # is already on npm. Versions are immutable, so this makes the job
+          # safely re-runnable after a partial failure.
+          publish() {
+            local dir="$1" name version
+            name=$(jq -r .name "$dir/package.json")
+            version=$(jq -r .version "$dir/package.json")
+
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip $name@$version (already published)"
+              return
+            fi
+            (cd "$dir" && npm publish "${flags[@]}")
+          }
+
+          # Platform packages first: the main package pins their exact versions
+          # in optionalDependencies, so they must already exist when it publishes.
+          for dir in npm/platforms/*/; do
+            publish "${dir%/}"
+          done
+          publish npm/brave-search-cli
