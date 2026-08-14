@@ -413,7 +413,7 @@ cat request.json | bx answers -
 | 3 | Auth/permission error (401/403) | Check API key or plan: `bx config show-key` |
 | 4 | Rate limited (429) | Retry after delay |
 | 5 | Server/network error | Retry with backoff |
-| 127 | npm launcher could not find the binary | Reinstall, or check platform support |
+| 127 | npm launcher could not start bx | Reinstall, or check platform support |
 
 ## Error Handling
 
