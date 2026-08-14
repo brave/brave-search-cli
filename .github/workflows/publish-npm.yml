@@ -32,9 +32,11 @@ jobs:
 
       - name: Resolve release
         id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.version }}"
+          tag="$INPUT_VERSION"
           if [ -z "$tag" ]; then
             tag=$(gh release view --json tagName -q .tagName)
           fi
