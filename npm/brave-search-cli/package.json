@@ -22,6 +22,9 @@
   "files": [
     "bin"
   ],
+  "engines": {
+    "node": ">=16"
+  },
   "optionalDependencies": {
     "@brave/brave-search-cli-darwin-arm64": "0.0.0",
     "@brave/brave-search-cli-linux-x64": "0.0.0",

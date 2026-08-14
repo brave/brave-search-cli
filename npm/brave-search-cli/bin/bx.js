@@ -2,6 +2,7 @@
 'use strict'
 
 const { spawnSync } = require('node:child_process')
+const { signals } = require('node:os').constants
 
 const PLATFORM_PACKAGES = {
   'darwin arm64': '@brave/brave-search-cli-darwin-arm64',
@@ -42,6 +43,13 @@ const result = spawnSync(binPath, process.argv.slice(2), { stdio: 'inherit' })
 
 if (result.error) {
   fail(`failed to run "${binPath}": ${result.error.message}`)
+}
+
+// If bx was killed by a signal, exit with the shell's 128 + signal convention;
+// otherwise pass through its exit code.
+if (result.signal) {
+  const signalNumber = signals[result.signal]
+  process.exit(signalNumber ? 128 + signalNumber : 1)
 }
 
 process.exit(result.status === null ? 1 : result.status)
