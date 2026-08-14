@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -120,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          flags=(--no-git-checks --access public)
+          flags=(--access public)
           if [ "$DRY_RUN" = "true" ]; then
             flags+=(--dry-run)
           else
