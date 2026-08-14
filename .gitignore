@@ -1,7 +1,10 @@
 /target/
 /dist/
 /.cargo/
+# Staged into each npm package at publish time (see publish-npm.yml).
 /npm/platforms/*/bin/
-# LICENSE files are copied into each package at publish time (see publish-npm.yml).
 /npm/platforms/*/LICENSE
 /npm/brave-search-cli/LICENSE
+
+node_modules/
+*.tgz
