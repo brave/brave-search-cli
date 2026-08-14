@@ -2,3 +2,6 @@
 /dist/
 /.cargo/
 /npm/platforms/*/bin/
+# LICENSE files are copied into each package at publish time (see publish-npm.yml).
+/npm/platforms/*/LICENSE
+/npm/brave-search-cli/LICENSE

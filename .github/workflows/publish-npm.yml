@@ -89,6 +89,15 @@ jobs:
           stage windows-amd64 win32-x64    bx.exe
           stage windows-arm64 win32-arm64  bx.exe
 
+      - name: Stage license into packages
+        run: |
+          set -euo pipefail
+          # npm ships a LICENSE file automatically when one is present, so drop
+          # the repository license into every package we publish.
+          for dir in npm/platforms/*/ npm/brave-search-cli/; do
+            cp LICENSE "$dir"
+          done
+
       - name: Set package versions
         run: |
           set -euo pipefail
