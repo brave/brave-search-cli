@@ -16,5 +16,6 @@
   ],
   "files": [
     "bin"
-  ]
+  ],
+  "preferUnplugged": true
 }
