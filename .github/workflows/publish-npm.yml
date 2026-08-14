@@ -40,34 +40,33 @@ jobs:
         run: |
           set -euo pipefail
           tag="$INPUT_VERSION"
-          if [ -z "$tag" ]; then
-            tag=$(gh release view --json tagName -q .tagName)
-          fi
-          gh release view "$tag" >/dev/null
+          [ -n "$tag" ] || tag=$(gh release view --json tagName -q .tagName)
 
-          case "$tag" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::unexpected tag format: $tag"; exit 1 ;;
-          esac
+          # Anchored: the tag reaches later steps as a shell variable, and a
+          # pre-release would otherwise claim npm's "latest" dist-tag.
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            { echo "::error::unexpected tag format: $tag"; exit 1; }
+          gh release view "$tag" >/dev/null
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download and stage platform binaries
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          version="${{ steps.release.outputs.version }}"
-          tag="${{ steps.release.outputs.tag }}"
           tmp=$(mktemp -d)
 
           stage() {
             local release_asset="$1" npm_platform="$2" bin_name="$3"
-            local asset="bx-${version}-${release_asset}"
+            local asset="bx-${VERSION}-${release_asset}"
             [ "$bin_name" = "bx.exe" ] && asset="${asset}.exe"
 
             # Download the binary alongside its checksum, then verify integrity
             # before we trust it enough to publish to npm.
-            gh release download "$tag" --dir "$tmp" --clobber \
+            gh release download "$TAG" --dir "$tmp" --clobber \
               --pattern "$asset" --pattern "$asset.sha256"
 
             local expected actual
@@ -99,16 +98,17 @@ jobs:
           done
 
       - name: Set package versions
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          version="${{ steps.release.outputs.version }}"
 
           for dir in npm/platforms/*/; do
-            jq --arg v "$version" '.version = $v' "${dir}package.json" > "${dir}package.json.tmp"
+            jq --arg v "$VERSION" '.version = $v' "${dir}package.json" > "${dir}package.json.tmp"
             mv "${dir}package.json.tmp" "${dir}package.json"
           done
 
-          jq --arg v "$version" \
+          jq --arg v "$VERSION" \
              '.version = $v | .optionalDependencies |= with_entries(.value = $v)' \
              npm/brave-search-cli/package.json > npm/brave-search-cli/package.json.tmp
           mv npm/brave-search-cli/package.json.tmp npm/brave-search-cli/package.json
