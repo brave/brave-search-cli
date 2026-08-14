@@ -12,9 +12,10 @@ const PLATFORM_PACKAGES = {
   'win32 arm64': '@brave/brave-search-cli-win32-arm64',
 }
 
+// 127 ("command not found") keeps launch failures out of bx's own 0-5 range.
 function fail(message) {
   console.error(`bx: ${message}`)
-  process.exit(1)
+  process.exit(127)
 }
 
 const key = `${process.platform} ${process.arch}`
