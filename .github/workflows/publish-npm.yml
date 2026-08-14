@@ -62,7 +62,18 @@ jobs:
             local asset="bx-${version}-${release_asset}"
             [ "$bin_name" = "bx.exe" ] && asset="${asset}.exe"
 
-            gh release download "$tag" --dir "$tmp" --clobber --pattern "$asset"
+            # Download the binary alongside its checksum, then verify integrity
+            # before we trust it enough to publish to npm.
+            gh release download "$tag" --dir "$tmp" --clobber \
+              --pattern "$asset" --pattern "$asset.sha256"
+
+            local expected actual
+            expected=$(cut -d' ' -f1 < "$tmp/$asset.sha256")
+            actual=$(sha256sum "$tmp/$asset" | cut -d' ' -f1)
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::checksum mismatch for $asset (expected $expected, got $actual)"
+              exit 1
+            fi
 
             mkdir -p "npm/platforms/${npm_platform}/bin"
             cp "$tmp/$asset" "npm/platforms/${npm_platform}/bin/${bin_name}"
