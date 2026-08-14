@@ -127,15 +127,16 @@ jobs:
             flags+=(--provenance) # signed build attestation; needs id-token: write
           fi
 
-          # Publish one package directory, skipping it when that exact version
-          # is already on npm. Versions are immutable, so this makes the job
-          # safely re-runnable after a partial failure.
+          # Publish one package directory, skipping it when that exact version is
+          # already on npm. Versions are immutable, so this makes the job safely
+          # re-runnable after a partial failure. Dry runs never skip, otherwise
+          # they would validate nothing for an already-published version.
           publish() {
             local dir="$1" name version
             name=$(jq -r .name "$dir/package.json")
             version=$(jq -r .version "$dir/package.json")
 
-            if npm view "$name@$version" version >/dev/null 2>&1; then
+            if [ "$DRY_RUN" != "true" ] && npm view "$name@$version" version >/dev/null 2>&1; then
               echo "skip $name@$version (already published)"
               return
             fi
