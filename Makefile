@@ -9,6 +9,11 @@ test:
 test-unit:
 	cargo test
 
+# npm launcher: hermetic, no API key or network needed.
+.PHONY: test-npm
+test-npm:
+	node --test 'npm/brave-search-cli/test/*.test.js'
+
 .PHONY: build
 build:
 	cargo build --release
