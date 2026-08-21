@@ -46,10 +46,7 @@ if (result.error) {
   fail(`failed to run "${binPath}": ${result.error.message}`)
 }
 
-// Killed by a signal: use the shell's 128 + N convention.
-if (result.signal) {
-  const signalNumber = signals[result.signal]
-  process.exit(signalNumber ? 128 + signalNumber : 1)
-}
-
-process.exit(result.status ?? 1)
+// Killed by a signal: the shell's 128 + N convention. Node reports "" for a
+// signal it cannot name, so anything indeterminate exits 127, never 0-5.
+const signalNumber = signals[result.signal]
+process.exit(signalNumber ? 128 + signalNumber : (result.status ?? 127))
