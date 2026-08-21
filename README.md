@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.ps1 | iex"
 ```
 
-**npm**
+**npm** (requires Node ≥ 16; no Intel-Mac build)
 ```bash
 npm install -g @brave/brave-search-cli
 ```
