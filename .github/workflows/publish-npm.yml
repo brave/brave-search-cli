@@ -34,9 +34,11 @@ jobs:
       # from the dispatched ref (tags up to v1.5.0 predate npm/).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Node 24 for npm >= 11: it refuses to implicitly move the "latest"
+      # dist-tag backwards, which nothing else here would catch.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Resolve release
@@ -48,11 +50,14 @@ jobs:
           tag="$INPUT_VERSION"
           [ -n "$tag" ] || tag=$(gh release view --json tagName -q .tagName)
 
-          # Anchored: the tag reaches later steps as a shell variable, and a
-          # pre-release would otherwise claim npm's "latest" dist-tag.
+          # Anchored: the tag becomes a shell variable and an asset filename.
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
             { echo "::error::unexpected tag format: $tag"; exit 1; }
-          gh release view "$tag" >/dev/null
+
+          # The regex constrains the tag name, not GitHub's pre-release flag.
+          # A missing tag fails here too: gh errors and the result is empty.
+          [ "$(gh release view "$tag" --json isDraft,isPrerelease -q '.isDraft or .isPrerelease')" = false ] ||
+            { echo "::error::$tag is missing, a draft, or a pre-release"; exit 1; }
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
