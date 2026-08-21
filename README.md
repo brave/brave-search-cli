@@ -251,7 +251,12 @@ Settings are resolved in priority order: CLI flag > environment variable > confi
 |---------|----------|---------|------------|---------|
 | API key | `--api-key` | `BRAVE_SEARCH_API_KEY` | `api_key` | *(interactive prompt)* |
 | Base URL | `--base-url` | `BRAVE_SEARCH_BASE_URL` | `base_url` | `https://api.search.brave.com` |
-| Timeout | `--timeout` | — | `timeout` | `30` |
+| Timeout | `--timeout` | — | `timeout` | `30`, or `300` with `--enable-research` |
+
+Streamed answers have no total deadline: the timeout bounds each connection phase and each
+read, so a response that keeps arriving is never cut off, however long it runs. Deep
+research pauses for minutes while it synthesises, so `--enable-research` defaults to `300`
+seconds; a timeout set on the command line or in the config file overrides that default.
 
 **Config file** (`bx config path` to see location):
 - Linux: `~/.config/brave-search/config.json`
@@ -261,8 +266,7 @@ Settings are resolved in priority order: CLI flag > environment variable > confi
 ```json
 {
   "api_key": "BSA...",
-  "base_url": "https://api.search.brave.com",
-  "timeout": 30
+  "base_url": "https://api.search.brave.com"
 }
 ```
 

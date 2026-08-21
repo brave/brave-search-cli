@@ -55,7 +55,7 @@ struct Cli {
     )]
     base_url: Option<String>,
 
-    /// Request timeout in seconds [default: 30]
+    /// Request timeout in seconds [default: 30; 300 with --enable-research]
     #[arg(long, global = true)]
     timeout: Option<u64>,
 
@@ -913,6 +913,9 @@ fn bool_str(v: bool) -> &'static str {
 
 const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_TIMEOUT: u64 = 30;
+/// `--enable-research` searches server-side for minutes and streams nothing while it
+/// synthesises — measured silences up to 176s. Everything else should still fail fast.
+const DEFAULT_RESEARCH_TIMEOUT: u64 = 300;
 
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
@@ -947,7 +950,9 @@ fn main() {
         }
     };
 
-    let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
+    // `answers` picks its own default per request, so it needs the unresolved value.
+    let configured_timeout = cli.timeout.or(config.timeout);
+    let timeout = configured_timeout.unwrap_or(DEFAULT_TIMEOUT);
     if timeout == 0 {
         eprintln!("error: timeout must be greater than 0");
         std::process::exit(1);
@@ -965,7 +970,9 @@ fn main() {
 
     match cli.command {
         Command::Context(args) => cmd_context(&base, &api_key, args, &extras, ep, timeout),
-        Command::Answers(args) => cmd_answers(&base, &api_key, args, &extras, ep, timeout),
+        Command::Answers(args) => {
+            cmd_answers(&base, &api_key, args, &extras, ep, configured_timeout)
+        }
         Command::Web(args) => cmd_web(&base, &api_key, args, &extras, ep, timeout),
         Command::News(args) => cmd_news(&base, &api_key, args, &extras, ep, timeout),
         Command::Images(args) => cmd_images(&base, &api_key, args, &extras, ep, timeout),
@@ -1588,13 +1595,23 @@ fn cmd_spellcheck(
     api::get(base, &path, key, timeout);
 }
 
+/// Only research answers get the long default: they search server-side for minutes and
+/// stream nothing while synthesising. Read from the finished body so `--enable-research`
+/// and `--extra enable_research=…` agree, in both stdin and flag mode.
+fn answers_timeout(configured: Option<u64>, body: &serde_json::Value) -> u64 {
+    configured.unwrap_or(match body["enable_research"].as_bool() {
+        Some(true) => DEFAULT_RESEARCH_TIMEOUT,
+        _ => DEFAULT_TIMEOUT,
+    })
+}
+
 fn cmd_answers(
     base: &str,
     key: &str,
     a: AnswersArgs,
     extras: &[(&str, &str)],
     ep: Option<&str>,
-    timeout: u64,
+    configured_timeout: Option<u64>,
 ) {
     let path = ep.unwrap_or("/res/v1/chat/completions");
 
@@ -1619,8 +1636,8 @@ fn cmd_answers(
         };
         merge_extras(&mut body, extras);
 
-        let is_stream = body["stream"].as_bool().unwrap_or(true);
-        if is_stream {
+        let timeout = answers_timeout(configured_timeout, &body);
+        if body["stream"].as_bool().unwrap_or(true) {
             api::post_json_stream(base, path, key, &body, &[], timeout);
         } else {
             api::post_json(base, path, key, &body, &[], timeout);
@@ -1719,7 +1736,11 @@ fn cmd_answers(
 
     merge_extras(&mut body, extras);
 
-    if stream {
+    let timeout = answers_timeout(configured_timeout, &body);
+    // Read the transport from the merged body, as the stdin path already does: otherwise
+    // `--extra stream=false` sends a non-streaming request and parses the JSON reply as
+    // SSE, which yields exit 0 and no output at all.
+    if body["stream"].as_bool().unwrap_or(stream) {
         api::post_json_stream(base, path, key, &body, &[], timeout);
     } else {
         api::post_json(base, path, key, &body, &[], timeout);
@@ -1871,6 +1892,29 @@ fn cmd_descriptions(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    // ── answers_timeout ──────────────────────────────────────────────
+
+    #[test]
+    fn answers_timeout_is_long_only_for_research() {
+        let plain = serde_json::json!({"stream": true});
+        let research = serde_json::json!({"stream": true, "enable_research": true});
+
+        assert_eq!(answers_timeout(None, &plain), DEFAULT_TIMEOUT);
+        assert_eq!(answers_timeout(None, &research), DEFAULT_RESEARCH_TIMEOUT);
+        // Non-bool or absent means no research: fail fast.
+        assert_eq!(
+            answers_timeout(None, &serde_json::json!({"enable_research": "yes"})),
+            DEFAULT_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn answers_timeout_never_overrides_a_configured_value() {
+        let research = serde_json::json!({"enable_research": true});
+        assert_eq!(answers_timeout(Some(5), &research), 5);
+        assert_eq!(answers_timeout(Some(900), &serde_json::json!({})), 900);
+    }
 
     #[test]
     fn subcommands_list_matches_clap_enum() {
