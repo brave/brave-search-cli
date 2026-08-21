@@ -56,7 +56,7 @@ struct Cli {
     )]
     base_url: Option<String>,
 
-    /// Request timeout in seconds [default: 30; max: 86400]
+    /// Request timeout in seconds [default: 30; 300 with --enable-research; max: 86400]
     #[arg(long, global = true)]
     timeout: Option<u64>,
 
@@ -914,10 +914,16 @@ fn bool_str(v: bool) -> &'static str {
 
 const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_TIMEOUT: u64 = 30;
+/// `--enable-research` searches server-side for minutes and streams nothing while it
+/// synthesises — measured silences up to 176s, and Brave publishes a SimpleQA p99 of ~300s.
+const DEFAULT_RESEARCH_TIMEOUT: u64 = 300;
 /// A day. Nothing legitimate comes close, and a large enough value (measured: 2^63
 /// seconds) overflows the `Instant` maths inside ureq and panics — exit 101, or SIGABRT in
 /// release, neither of them a documented outcome.
 const MAX_TIMEOUT: u64 = 86_400;
+/// `DEFAULT_TIMEOUT` is range-checked at runtime on every call; the research default is the one
+/// value `answers_timeouts` can return without passing through that check.
+const _: () = assert!(DEFAULT_RESEARCH_TIMEOUT >= 1 && DEFAULT_RESEARCH_TIMEOUT <= MAX_TIMEOUT);
 
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
@@ -950,7 +956,9 @@ fn main() {
         }
     };
 
-    let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
+    // `answers` picks its own default per request, so it needs the unresolved value.
+    let configured_timeout = cli.timeout.or(config.timeout);
+    let timeout = configured_timeout.unwrap_or(DEFAULT_TIMEOUT);
     if timeout == 0 || timeout > MAX_TIMEOUT {
         eprintln!("error: timeout must be between 1 and {MAX_TIMEOUT} seconds");
         std::process::exit(2);
@@ -975,7 +983,9 @@ fn main() {
 
     match cli.command {
         Command::Context(args) => cmd_context(&base, &api_key, args, &extras, ep, timeout),
-        Command::Answers(args) => cmd_answers(&base, &api_key, args, &extras, ep, timeout),
+        Command::Answers(args) => {
+            cmd_answers(&base, &api_key, args, &extras, ep, configured_timeout)
+        }
         Command::Web(args) => cmd_web(&base, &api_key, args, &extras, ep, timeout),
         Command::News(args) => cmd_news(&base, &api_key, args, &extras, ep, timeout),
         Command::Images(args) => cmd_images(&base, &api_key, args, &extras, ep, timeout),
@@ -1606,13 +1616,40 @@ fn cmd_spellcheck(
     api::get(base, &path, key, timeout);
 }
 
+/// The two deadlines an answers request needs. `dial` bounds getting to the first byte; `read`
+/// bounds silence once the answer is streaming, and is the whole budget for a blocking request.
+/// Research pauses for minutes, so it earns a longer `read` — never a longer dial, or a dead host
+/// would take five minutes to report. Read from the merged body, so `--enable-research`,
+/// `--extra enable_research=…` and a stdin body all agree, in both input modes; a numeric `1`
+/// there is read but left on the wire as-is, which the API either accepts or rejects quickly.
+fn answers_timeouts(configured: Option<u64>, body: &serde_json::Value) -> (u64, u64) {
+    let read = configured.unwrap_or(match query::json_bool(&body["enable_research"]) {
+        Some(true) => DEFAULT_RESEARCH_TIMEOUT,
+        _ => DEFAULT_TIMEOUT,
+    });
+    (configured.unwrap_or(DEFAULT_TIMEOUT), read)
+}
+
+/// The transport the merged body asks for, written back as a real boolean so the request and
+/// the parser can never disagree. `--extra` types a bare `0` as a number, and dispatching on
+/// the flag instead is what made `--extra stream=false` send JSON and then parse it as SSE.
+fn resolve_stream(body: &mut serde_json::Value, default: bool) -> bool {
+    let stream = query::json_bool(&body["stream"]).unwrap_or(default);
+    // `as_object_mut`, not `body["stream"] = …`: `IndexMut` panics on the non-object body a
+    // stdin caller can supply.
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".into(), stream.into());
+    }
+    stream
+}
+
 fn cmd_answers(
     base: &str,
     key: &str,
     a: AnswersArgs,
     extras: &[(&str, &str)],
     ep: Option<&str>,
-    timeout: u64,
+    configured_timeout: Option<u64>,
 ) {
     let path = ep.unwrap_or("/res/v1/chat/completions");
 
@@ -1637,11 +1674,11 @@ fn cmd_answers(
         };
         merge_extras(&mut body, extras);
 
-        let is_stream = body["stream"].as_bool().unwrap_or(true);
-        if is_stream {
-            api::post_json_stream(base, path, key, &body, &[], timeout);
+        let (dial, read) = answers_timeouts(configured_timeout, &body);
+        if resolve_stream(&mut body, !a.no_stream) {
+            api::post_json_stream(base, path, key, &body, dial, read);
         } else {
-            api::post_json(base, path, key, &body, &[], timeout);
+            api::post_json(base, path, key, &body, &[], read);
         }
         return;
     }
@@ -1737,10 +1774,11 @@ fn cmd_answers(
 
     merge_extras(&mut body, extras);
 
-    if stream {
-        api::post_json_stream(base, path, key, &body, &[], timeout);
+    let (dial, read) = answers_timeouts(configured_timeout, &body);
+    if resolve_stream(&mut body, stream) {
+        api::post_json_stream(base, path, key, &body, dial, read);
     } else {
-        api::post_json(base, path, key, &body, &[], timeout);
+        api::post_json(base, path, key, &body, &[], read);
     }
 }
 
@@ -1889,6 +1927,190 @@ fn cmd_descriptions(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    // ── answers_timeouts ─────────────────────────────────────────────
+
+    /// Guessing wrong towards 30s costs an actionable `no data for 30s — raise --timeout`;
+    /// guessing wrong towards 300s hangs an agent for five minutes. So only a value bx can
+    /// actually read as `true` earns the long read budget.
+    #[test]
+    fn answers_timeouts_is_long_only_for_research() {
+        for on in [serde_json::json!(true), serde_json::json!(1)] {
+            let body = serde_json::json!({"stream": true, "enable_research": on});
+            assert_eq!(
+                answers_timeouts(None, &body).1,
+                DEFAULT_RESEARCH_TIMEOUT,
+                "{body}"
+            );
+        }
+        for off in [
+            serde_json::json!(false),
+            serde_json::json!(0),
+            serde_json::json!("true"), // a string is not a request for research
+            serde_json::json!("yes"),
+            serde_json::json!(2),
+            serde_json::json!(null),
+        ] {
+            let body = serde_json::json!({"stream": true, "enable_research": off});
+            assert_eq!(answers_timeouts(None, &body).1, DEFAULT_TIMEOUT, "{body}");
+        }
+        assert_eq!(
+            answers_timeouts(None, &serde_json::json!({})).1,
+            DEFAULT_TIMEOUT
+        );
+    }
+
+    /// The research budget must never reach the dial phases: `streaming_agent` spends it on DNS,
+    /// connect and the wait for headers too, so a blackholed host would take five minutes to
+    /// report instead of thirty seconds.
+    #[test]
+    fn answers_timeouts_keeps_the_research_budget_off_the_dial_phases() {
+        let research = serde_json::json!({"enable_research": true});
+        assert_eq!(answers_timeouts(None, &research), (DEFAULT_TIMEOUT, 300));
+        // An explicit value governs both, in either direction.
+        assert_eq!(answers_timeouts(Some(600), &research), (600, 600));
+        assert_eq!(answers_timeouts(Some(2), &research), (2, 2));
+    }
+
+    /// The transport does not enter into it: `--no-stream --enable-research` still gets the long
+    /// budget, because a blocking research call is exactly the one that runs for minutes.
+    #[test]
+    fn answers_timeouts_ignores_the_transport() {
+        let blocking = serde_json::json!({"stream": false, "enable_research": true});
+        assert_eq!(answers_timeouts(None, &blocking), (DEFAULT_TIMEOUT, 300));
+    }
+
+    /// A stdin body need not be an object; indexing one must not panic.
+    #[test]
+    fn answers_timeouts_survives_a_non_object_body() {
+        for body in [
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!("string"),
+            serde_json::json!(42),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(
+                answers_timeouts(None, &body),
+                (DEFAULT_TIMEOUT, DEFAULT_TIMEOUT),
+                "{body}"
+            );
+            assert_eq!(answers_timeouts(Some(7), &body), (7, 7), "{body}");
+        }
+    }
+
+    /// `--timeout 30 --enable-research` must stay 30. That the explicit value is
+    /// indistinguishable from the default once resolved is the whole reason `cmd_answers`
+    /// takes `Option<u64>` rather than `u64`.
+    #[test]
+    fn answers_timeouts_never_override_a_configured_value() {
+        let research = serde_json::json!({"enable_research": true});
+        assert_eq!(answers_timeouts(Some(5), &research), (5, 5));
+        assert_eq!(
+            answers_timeouts(Some(DEFAULT_TIMEOUT), &research),
+            (DEFAULT_TIMEOUT, DEFAULT_TIMEOUT)
+        );
+        assert_eq!(
+            answers_timeouts(Some(900), &serde_json::json!({})),
+            (900, 900)
+        );
+    }
+
+    /// Neither value ever passes main's `1..=MAX_TIMEOUT` guard, which runs on the configured
+    /// value before dispatch. A value outside that range panics inside ureq's `Instant` maths —
+    /// exit 101, or SIGABRT in release.
+    #[test]
+    fn answers_timeouts_always_return_usable_values() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"enable_research": true}),
+            serde_json::json!({"enable_research": 1}),
+        ] {
+            let (dial, read) = answers_timeouts(None, &body);
+            assert!((1..=MAX_TIMEOUT).contains(&dial), "{body} → {dial}");
+            assert!((1..=MAX_TIMEOUT).contains(&read), "{body} → {read}");
+        }
+    }
+
+    // ── resolve_stream ───────────────────────────────────────────────
+
+    /// Dispatching on the flag sent a non-streaming request and then fed the JSON reply to
+    /// the SSE parser: exit 0 and no output. `stream=0` is the same bug one JSON type over,
+    /// because `--extra` types a bare `0` as a number.
+    #[test]
+    fn resolve_stream_follows_the_body_before_the_flag() {
+        for (v, want) in [
+            (serde_json::json!(false), false),
+            (serde_json::json!(0), false),
+            (serde_json::json!(true), true),
+            (serde_json::json!(1), true),
+        ] {
+            let mut body = serde_json::json!({"stream": v});
+            assert_eq!(resolve_stream(&mut body, !want), want, "{body}");
+        }
+    }
+
+    /// A value bx cannot read leaves the flag in charge — in both directions — and the body
+    /// is rewritten to match, so the request can never ask for one thing while bx parses
+    /// another.
+    #[test]
+    fn resolve_stream_writes_its_decision_back_into_the_body() {
+        for junk in [
+            serde_json::json!("false"),
+            serde_json::json!(2),
+            serde_json::json!(null),
+            serde_json::json!({}),
+        ] {
+            for default in [true, false] {
+                let mut body = serde_json::json!({"stream": junk});
+                assert_eq!(resolve_stream(&mut body, default), default, "{junk}");
+                assert_eq!(body["stream"], serde_json::json!(default), "{junk}");
+            }
+        }
+    }
+
+    /// A stdin body that omits `stream` gains it, so bx and the server cannot disagree
+    /// about the transport by defaulting differently.
+    #[test]
+    fn resolve_stream_adds_a_missing_key() {
+        let mut body = serde_json::json!({"messages": []});
+        assert!(resolve_stream(&mut body, true));
+        assert_eq!(body["stream"], serde_json::json!(true));
+    }
+
+    /// A container is no more readable as a boolean than a string is, and rewriting it must not
+    /// disturb anything else the caller sent.
+    #[test]
+    fn resolve_stream_replaces_a_container_and_leaves_its_neighbours_alone() {
+        for junk in [serde_json::json!([1, 2]), serde_json::json!({"a": 1})] {
+            let mut body = serde_json::json!({"stream": junk, "messages": [], "model": "m"});
+            assert!(!resolve_stream(&mut body, false), "{junk}");
+            assert_eq!(body["stream"], serde_json::json!(false), "{junk}");
+            assert_eq!(body["messages"], serde_json::json!([]), "{junk}");
+            assert_eq!(body["model"], serde_json::json!("m"), "{junk}");
+        }
+    }
+
+    /// A value already on the right side of the decision is returned untouched — the rewrite
+    /// exists to close a disagreement, not to normalise for its own sake.
+    #[test]
+    fn resolve_stream_leaves_a_correct_value_alone() {
+        let mut body = serde_json::json!({"stream": false});
+        assert!(!resolve_stream(&mut body, true));
+        assert_eq!(body, serde_json::json!({"stream": false}));
+    }
+
+    /// A stdin body need not be an object. `IndexMut` would panic here; `as_object_mut`
+    /// leaves it alone and lets the API reject it.
+    #[test]
+    fn resolve_stream_survives_a_non_object_body() {
+        let mut body = serde_json::json!([1, 2, 3]);
+        assert!(resolve_stream(&mut body, true));
+        assert_eq!(body, serde_json::json!([1, 2, 3]));
+        // …and the flag still decides, in both directions.
+        let mut body = serde_json::json!("string");
+        assert!(!resolve_stream(&mut body, false));
+        assert_eq!(body, serde_json::json!("string"));
+    }
 
     #[test]
     fn subcommands_list_matches_clap_enum() {

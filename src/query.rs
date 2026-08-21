@@ -23,6 +23,17 @@ fn auto_detect_json_type(v: &str) -> serde_json::Value {
     }
 }
 
+/// Reads a JSON boolean, accepting the `0`/`1` that `auto_detect_json_type` produces for a
+/// bare `--extra stream=0`. Only those two: bx must not invent a truthiness rule the API does
+/// not document, and a value it cannot read is left to the caller's default.
+pub fn json_bool(v: &serde_json::Value) -> Option<bool> {
+    v.as_bool().or_else(|| match v.as_i64()? {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    })
+}
+
 /// Builds a JSON object from pre-typed key-value pairs, skipping None values.
 pub fn build_json_body(params: &[(&str, Option<serde_json::Value>)]) -> serde_json::Value {
     let mut map = serde_json::Map::with_capacity(params.len());
@@ -187,6 +198,55 @@ mod tests {
     #[test]
     fn auto_detect_null_is_string() {
         assert_eq!(auto_detect_json_type("null"), serde_json::json!("null"));
+    }
+
+    // ── json_bool ────────────────────────────────────────────────────
+
+    /// `--extra stream=0` types to a JSON *number*, so a bool-only read ignored it and the
+    /// transport fell back to the flag while the wire said `0`.
+    #[test]
+    fn json_bool_reads_booleans_and_the_numbers_0_and_1() {
+        assert_eq!(json_bool(&serde_json::json!(true)), Some(true));
+        assert_eq!(json_bool(&serde_json::json!(false)), Some(false));
+        assert_eq!(json_bool(&serde_json::json!(1)), Some(true));
+        assert_eq!(json_bool(&serde_json::json!(0)), Some(false));
+    }
+
+    /// Anything else is left to the caller's default rather than guessed at: bx must not
+    /// invent a truthiness rule, and rewriting `2` to `true` would change what was sent.
+    #[test]
+    fn json_bool_refuses_to_guess_at_anything_else() {
+        for v in [
+            serde_json::json!(-1),
+            serde_json::json!(2),
+            serde_json::json!(1.0), // as_i64 is None for a float, even a whole one
+            serde_json::json!(0.0),
+            serde_json::json!("true"), // auto-typing already natives a bare `true`
+            serde_json::json!("1"),
+            serde_json::json!(""),
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(json_bool(&v), None, "{v}");
+        }
+    }
+
+    /// A number too large for `i64` is the only real number that reaches the `?` in `as_i64`.
+    /// It must read as "unset" like any other unreadable value, not panic or saturate to 1.
+    #[test]
+    fn json_bool_treats_an_out_of_range_number_as_unset() {
+        let huge: serde_json::Value = serde_json::from_str("18446744073709551615").unwrap();
+        assert_eq!(json_bool(&huge), None);
+        let negative: serde_json::Value = serde_json::from_str("-9223372036854775809").unwrap();
+        assert_eq!(json_bool(&negative), None);
+    }
+
+    /// An absent key indexes to `Null`; it must read as "unset", never as `false`.
+    #[test]
+    fn json_bool_treats_a_missing_key_as_unset() {
+        assert_eq!(json_bool(&serde_json::json!({})["stream"]), None);
+        assert_eq!(json_bool(&serde_json::json!([1, 2])["stream"]), None);
     }
 
     // ── build_json_body ──────────────────────────────────────────────
