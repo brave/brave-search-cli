@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       dry_run:
-        description: "Run npm publish with --dry-run (packs and validates everything, publishes nothing)"
+        description: "Stage, pack and install the packages, but stop short of publishing (--dry-run)"
         required: false
         type: boolean
         default: false
@@ -65,20 +65,18 @@ jobs:
           set -euo pipefail
           tmp=$(mktemp -d)
 
+          # Catches a corrupt or truncated download, not tampering: the
+          # checksums ship in the same release as the binaries.
+          gh release download "$TAG" --dir "$tmp" --pattern "bx-${VERSION}-*"
+          (cd "$tmp" && sha256sum -c ./*.sha256)
+
+          # Platform packages declare no "bin", so npm never chmods them on
+          # install — the executable bit has to ship in the tarball.
           stage() {
             local target="$1" npm_platform="$2" ext=""
             case "$target" in windows-*) ext=".exe" ;; esac
-            local asset="bx-${VERSION}-${target}${ext}"
-
-            # Catches a corrupt or truncated download, not tampering: the
-            # checksum ships in the same release as the binary.
-            gh release download "$TAG" --dir "$tmp" \
-              --pattern "$asset" --pattern "$asset.sha256"
-            (cd "$tmp" && sha256sum -c "$asset.sha256")
-
-            # Platform packages declare no "bin", so npm never chmods them on
-            # install — the executable bit has to ship in the tarball.
-            install -Dm755 "$tmp/$asset" "npm/platforms/${npm_platform}/bin/bx${ext}"
+            install -Dm755 "$tmp/bx-${VERSION}-${target}${ext}" \
+              "npm/platforms/${npm_platform}/bin/bx${ext}"
           }
 
           stage linux-amd64   linux-x64
@@ -87,28 +85,30 @@ jobs:
           stage windows-amd64 win32-x64
           stage windows-arm64 win32-arm64
 
-          # Proves the exec bit survived staging and the asset matches the tag.
-          npm/platforms/linux-x64/bin/bx --version | grep -qF "$VERSION"
-
-      - name: Stage license and versions into packages
+      - name: Stage packages, then install what will be published
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          # npm ships a LICENSE file automatically when one is present.
+          # npm auto-includes LICENSE, but only from the package dir. The "?" is
+          # required: platform manifests have no optionalDependencies to iterate.
           for dir in npm/platforms/*/ npm/brave-search-cli/; do
             cp LICENSE "$dir"
-          done
-
-          for dir in npm/platforms/*/; do
-            jq --arg v "$VERSION" '.version = $v' "${dir}package.json" > "${dir}package.json.tmp"
+            jq --arg v "$VERSION" '.version = $v | .optionalDependencies[]? = $v' \
+              "${dir}package.json" > "${dir}package.json.tmp"
             mv "${dir}package.json.tmp" "${dir}package.json"
           done
 
-          jq --arg v "$VERSION" \
-             '.version = $v | .optionalDependencies |= with_entries(.value = $v)' \
-             npm/brave-search-cli/package.json > npm/brave-search-cli/package.json.tmp
-          mv npm/brave-search-cli/package.json.tmp npm/brave-search-cli/package.json
+          # Install the real tarballs rather than trusting the staged tree: the
+          # only check of the "files" arrays, the launcher, and the binary's
+          # compiled-in version (the asset filename only claims it). Just the two
+          # matching this runner install — npm rejects a foreign os/cpu.
+          t=$(mktemp -d)
+          npm pack --pack-destination "$t" ./npm/platforms/*/ ./npm/brave-search-cli
+          npm install --prefix "$t/smoke" --global \
+            "$t/brave-brave-search-cli-$VERSION.tgz" \
+            "$t/brave-brave-search-cli-linux-x64-$VERSION.tgz"
+          "$t/smoke/bin/bx" --version | grep -qx "bx $VERSION"
 
       - name: Publish to npm
         env:
@@ -121,13 +121,11 @@ jobs:
           if [ "$DRY_RUN" = "true" ]; then
             flags+=(--dry-run)
           else
-            flags+=(--provenance) # signed build attestation; needs id-token: write
+            flags+=(--provenance) # attests this packaging run; needs id-token: write
           fi
 
-          # Publish one package directory, skipping it when that exact version is
-          # already on npm. Versions are immutable, so this makes the job safely
-          # re-runnable after a partial failure. Dry runs never skip, otherwise
-          # they would validate nothing for an already-published version.
+          # Versions are immutable: skip already-published ones so re-runs after
+          # a partial failure are safe. Dry runs never skip.
           publish() {
             local dir="$1" name version
             name=$(jq -r .name "$dir/package.json")
@@ -140,8 +138,8 @@ jobs:
             (cd "$dir" && npm publish "${flags[@]}")
           }
 
-          # Platform packages first: the main package pins their exact versions
-          # in optionalDependencies, so they must already exist when it publishes.
+          # Platform packages first: otherwise the wrapper is installable
+          # without a binary.
           for dir in npm/platforms/*/; do
             publish "${dir%/}"
           done
