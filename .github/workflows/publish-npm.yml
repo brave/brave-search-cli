@@ -1,0 +1,151 @@
+name: Publish npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish (e.g. v1.5.0). Leave blank to use the latest release."
+        required: false
+        type: string
+      dry_run:
+        description: "Stage, pack and install the packages, but stop short of publishing (--dry-run)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read # gh release download
+      id-token: write # npm provenance attestation
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Only the binaries come from the release tag; the npm package files come
+      # from the dispatched ref (tags up to v1.5.0 predate npm/).
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Node 24 for npm >= 11: it refuses to implicitly move the "latest"
+      # dist-tag backwards, which nothing else here would catch.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve release
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_VERSION"
+          [ -n "$tag" ] || tag=$(gh release view --json tagName -q .tagName)
+
+          # Anchored: the tag becomes a shell variable and an asset filename.
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            { echo "::error::unexpected tag format: $tag"; exit 1; }
+
+          # The regex constrains the tag name, not GitHub's pre-release flag.
+          # A missing tag fails here too: gh errors and the result is empty.
+          [ "$(gh release view "$tag" --json isDraft,isPrerelease -q '.isDraft or .isPrerelease')" = false ] ||
+            { echo "::error::$tag is missing, a draft, or a pre-release"; exit 1; }
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download and stage platform binaries
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+
+          # Catches a corrupt or truncated download, not tampering: the
+          # checksums ship in the same release as the binaries.
+          gh release download "$TAG" --dir "$tmp" --pattern "bx-${VERSION}-*"
+          (cd "$tmp" && sha256sum -c ./*.sha256)
+
+          # Platform packages declare no "bin", so npm never chmods them on
+          # install — the executable bit has to ship in the tarball.
+          stage() {
+            local target="$1" npm_platform="$2" ext=""
+            case "$target" in windows-*) ext=".exe" ;; esac
+            install -Dm755 "$tmp/bx-${VERSION}-${target}${ext}" \
+              "npm/platforms/${npm_platform}/bin/bx${ext}"
+          }
+
+          stage linux-amd64   linux-x64
+          stage linux-arm64   linux-arm64
+          stage darwin-arm64  darwin-arm64
+          stage windows-amd64 win32-x64
+          stage windows-arm64 win32-arm64
+
+      - name: Stage packages, then install what will be published
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          # npm auto-includes LICENSE, but only from the package dir. The "?" is
+          # required: platform manifests have no optionalDependencies to iterate.
+          for dir in npm/platforms/*/ npm/brave-search-cli/; do
+            cp LICENSE "$dir"
+            jq --arg v "$VERSION" '.version = $v | .optionalDependencies[]? = $v' \
+              "${dir}package.json" > "${dir}package.json.tmp"
+            mv "${dir}package.json.tmp" "${dir}package.json"
+          done
+
+          # Install the real tarballs rather than trusting the staged tree: the
+          # only check of the "files" arrays, the launcher, and the binary's
+          # compiled-in version (the asset filename only claims it). Just the two
+          # matching this runner install — npm rejects a foreign os/cpu.
+          t=$(mktemp -d)
+          npm pack --pack-destination "$t" ./npm/platforms/*/ ./npm/brave-search-cli
+          npm install --prefix "$t/smoke" --global \
+            "$t/brave-brave-search-cli-$VERSION.tgz" \
+            "$t/brave-brave-search-cli-linux-x64-$VERSION.tgz"
+          "$t/smoke/bin/bx" --version | grep -qx "bx $VERSION"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          flags=(--access public)
+          if [ "$DRY_RUN" = "true" ]; then
+            flags+=(--dry-run)
+          else
+            flags+=(--provenance) # attests this packaging run; needs id-token: write
+          fi
+
+          # Versions are immutable: skip already-published ones so re-runs after
+          # a partial failure are safe. Dry runs never skip.
+          publish() {
+            local dir="$1" name version
+            name=$(jq -r .name "$dir/package.json")
+            version=$(jq -r .version "$dir/package.json")
+
+            if [ "$DRY_RUN" != "true" ] && npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip $name@$version (already published)"
+              return
+            fi
+            (cd "$dir" && npm publish "${flags[@]}")
+          }
+
+          # Platform packages first: otherwise the wrapper is installable
+          # without a binary.
+          for dir in npm/platforms/*/; do
+            publish "${dir%/}"
+          done
+          publish npm/brave-search-cli

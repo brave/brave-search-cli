@@ -16,6 +16,11 @@ curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.ps1 | iex"
 ```
 
+**npm** (requires Node ≥ 16; no Intel-Mac build)
+```bash
+npm install -g @brave/brave-search-cli
+```
+
 ```bash
 bx config set-key YOUR_API_KEY    # get a key at https://api-dashboard.search.brave.com
 bx "your search query"            # shorthand for: bx context "your search query"
@@ -408,6 +413,7 @@ cat request.json | bx answers -
 | 3 | Auth/permission error (401/403) | Check API key or plan: `bx config show-key` |
 | 4 | Rate limited (429) | Retry after delay |
 | 5 | Server/network error | Retry with backoff |
+| 127 | npm launcher could not start bx | Reinstall, or check platform support |
 
 ## Error Handling
 

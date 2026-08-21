@@ -1,0 +1,35 @@
+{
+  "name": "@brave/brave-search-cli",
+  "version": "0.0.0",
+  "description": "A token-efficient CLI for the Brave Search API, built for AI agents and LLMs",
+  "homepage": "https://github.com/brave/brave-search-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brave/brave-search-cli.git"
+  },
+  "bugs": "https://github.com/brave/brave-search-cli/issues",
+  "license": "MPL-2.0",
+  "keywords": [
+    "brave",
+    "search",
+    "cli",
+    "rag",
+    "llm"
+  ],
+  "bin": {
+    "bx": "bin/bx.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@brave/brave-search-cli-darwin-arm64": "0.0.0",
+    "@brave/brave-search-cli-linux-x64": "0.0.0",
+    "@brave/brave-search-cli-linux-arm64": "0.0.0",
+    "@brave/brave-search-cli-win32-x64": "0.0.0",
+    "@brave/brave-search-cli-win32-arm64": "0.0.0"
+  }
+}

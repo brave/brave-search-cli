@@ -1,0 +1,21 @@
+{
+  "name": "@brave/brave-search-cli-win32-arm64",
+  "version": "0.0.0",
+  "description": "win32-arm64 binary for @brave/brave-search-cli",
+  "homepage": "https://github.com/brave/brave-search-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brave/brave-search-cli.git"
+  },
+  "license": "MPL-2.0",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true
+}

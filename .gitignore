@@ -1,3 +1,10 @@
 /target/
 /dist/
 /.cargo/
+# Staged into each npm package at publish time (see publish-npm.yml).
+/npm/platforms/*/bin/
+/npm/**/LICENSE
+
+# Local `npm pack` / `npm install` scratch.
+node_modules/
+*.tgz
