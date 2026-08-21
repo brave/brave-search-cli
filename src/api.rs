@@ -146,18 +146,23 @@ fn agent(timeout_secs: u64) -> ureq::Agent {
     )
 }
 
-/// Agent for SSE streaming — per-phase timeouts only, no global deadline.
-/// Research mode responses can take up to ~300s; a global timeout would kill the stream.
+/// Agent for SSE streaming — research responses run for minutes, so no total deadline.
+///
+/// `timeout_recv_response` must stay unset: ureq measures the body deadline from the
+/// instant the headers arrived, so it would cap the whole stream, not just the headers.
+/// `timeout_recv_body` is re-armed on every read, so it bounds silence instead.
+/// The wait for headers is bounded only by the send-phase timeouts it inherits.
 fn streaming_agent(timeout_secs: u64) -> ureq::Agent {
     let t = Some(Duration::from_secs(timeout_secs));
     ureq::Agent::new_with_config(
         ureq::config::Config::builder()
             .http_status_as_error(false)
             .max_redirects(0)
+            .timeout_resolve(t)
             .timeout_connect(t)
             .timeout_send_request(t)
             .timeout_send_body(t)
-            .timeout_recv_response(t)
+            .timeout_recv_body(t)
             .user_agent(USER_AGENT)
             .build(),
     )
@@ -227,6 +232,14 @@ fn write_body_stderr(body: &str) {
             err.write_all(b"\n").ok();
         }
     }
+}
+
+/// True if an I/O error is a ureq timeout. ureq wraps those as `ErrorKind::Other`,
+/// so the kind alone cannot distinguish them.
+fn is_timeout(e: &io::Error) -> bool {
+    e.get_ref()
+        .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+        .is_some_and(|e| matches!(e, ureq::Error::Timeout(_)))
 }
 
 /// Prints an error message + raw body to stderr and exits.
@@ -339,6 +352,9 @@ pub fn post_json(
 
 /// Sends a POST request with a JSON body and streams SSE response line-by-line.
 /// Each `data:` line is printed to stdout. Stops at `data: [DONE]`.
+///
+/// `timeout` bounds every connection phase and every read; a server that keeps
+/// sending is never cut off, however long the stream runs.
 pub fn post_json_stream(
     base_url: &str,
     path: &str,
@@ -375,6 +391,13 @@ pub fn post_json_stream(
             loop {
                 let has_data = match read_line_bounded(&mut reader, &mut line) {
                     Ok(has) => has,
+                    Err(e) if is_timeout(&e) => {
+                        eprintln!(
+                            "error: no data for {timeout}s\n\
+                             hint: research answers pause for minutes — raise --timeout"
+                        );
+                        std::process::exit(5);
+                    }
                     Err(e) => {
                         eprintln!("error: reading stream: {e}");
                         std::process::exit(5);
@@ -393,9 +416,19 @@ pub fn post_json_stream(
                     if data == b"[DONE]" {
                         break;
                     }
-                    out.write_all(data).ok();
-                    out.write_all(b"\n").ok();
-                    out.flush().ok();
+                    let written = out
+                        .write_all(data)
+                        .and_then(|()| out.write_all(b"\n"))
+                        .and_then(|()| out.flush());
+                    if let Err(e) = written {
+                        // A closed reader (`bx answers … | head`) means nobody is left
+                        // to stream to; draining the rest would burn minutes and quota.
+                        if e.kind() == io::ErrorKind::BrokenPipe {
+                            return;
+                        }
+                        eprintln!("error: writing to stdout: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -410,6 +443,34 @@ pub fn post_json_stream(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    // ── agent configuration ──────────────────────────────────────────
+
+    /// Pins the timeouts a stream depends on. `recv_response` and `global` are the
+    /// two that silently cap a stream at `t` seconds no matter how much data flows.
+    #[test]
+    fn streaming_agent_has_no_total_deadline() {
+        let t = Duration::from_secs(300);
+        let timeouts = streaming_agent(300).config().timeouts();
+
+        assert_eq!(timeouts.recv_response, None, "would cap the whole stream");
+        assert_eq!(timeouts.global, None, "would cap the whole stream");
+        assert_eq!(timeouts.per_call, None, "would cap the whole stream");
+
+        assert_eq!(timeouts.recv_body, Some(t), "bounds silence between reads");
+        assert_eq!(timeouts.resolve, Some(t));
+        assert_eq!(timeouts.connect, Some(t));
+        // The wait for response headers inherits these two; unsetting them makes it
+        // unbounded (ureq timings.rs: RecvResponse => [SendRequest, SendBody]).
+        assert_eq!(timeouts.send_request, Some(t));
+        assert_eq!(timeouts.send_body, Some(t));
+    }
+
+    #[test]
+    fn blocking_agent_has_a_total_deadline() {
+        let timeouts = agent(30).config().timeouts();
+        assert_eq!(timeouts.global, Some(Duration::from_secs(30)));
+    }
 
     // ── auto_detect_json_type ────────────────────────────────────────
 
