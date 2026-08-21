@@ -12,6 +12,8 @@ const PLATFORM_PACKAGES = {
   'win32 arm64': '@brave/brave-search-cli-win32-arm64',
 }
 
+const HELP = 'See https://github.com/brave/brave-search-cli#quick-start for install options.'
+
 // 127 ("command not found") keeps launch failures out of bx's own 0-5 range.
 function fail(message) {
   console.error(`bx: ${message}`)
@@ -22,10 +24,14 @@ const key = `${process.platform} ${process.arch}`
 const pkg = PLATFORM_PACKAGES[key]
 
 if (!pkg) {
-  fail(
-    `unsupported platform (${key}). ` +
-      'See https://github.com/brave/brave-search-cli#quick-start for other install options.'
-  )
+  // process.arch is the Node build's architecture, not the CPU's, so x64 Node
+  // under Rosetta lands here on hardware that is otherwise supported.
+  const hint =
+    key === 'darwin x64'
+      ? 'no Intel macOS binary exists. Under Rosetta, reinstall Node as arm64; ' +
+        'on a real Intel Mac, build from source: cargo build --release.'
+      : HELP
+  fail(`unsupported platform (${key}). ${hint}`)
 }
 
 const binName = process.platform === 'win32' ? 'bx.exe' : 'bx'
@@ -34,10 +40,7 @@ let binPath
 try {
   binPath = require.resolve(`${pkg}/bin/${binName}`)
 } catch {
-  fail(
-    `the optional dependency "${pkg}" did not install. ` +
-      'Try reinstalling, or install directly: https://github.com/brave/brave-search-cli#quick-start'
-  )
+  fail(`the optional dependency "${pkg}" did not install. Try reinstalling. ${HELP}`)
 }
 
 const result = spawnSync(binPath, process.argv.slice(2), { stdio: 'inherit' })
