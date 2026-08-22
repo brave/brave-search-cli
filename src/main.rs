@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod query;
 
 use std::borrow::Cow;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -900,7 +901,7 @@ fn parse_extra(extras: &[String]) -> Vec<(&str, &str)> {
 
 /// Merges --extra pairs into a JSON body, exiting on error.
 fn merge_extras(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
-    if let Err(msg) = api::merge_extra_into_json(body, extras) {
+    if let Err(msg) = query::merge_extra_into_json(body, extras) {
         eprintln!("error: {msg}");
         std::process::exit(1);
     }
@@ -1416,7 +1417,7 @@ fn cmd_web(
     timeout: u64,
 ) {
     let goggles_resolved = a.goggles_args.resolve();
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
@@ -1479,7 +1480,7 @@ fn cmd_images(
         ("safesearch", a.safesearch.as_deref()),
         ("spellcheck", a.spellcheck.map(bool_str)),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/images/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1492,7 +1493,7 @@ fn cmd_videos(
     ep: Option<&str>,
     timeout: u64,
 ) {
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
@@ -1524,7 +1525,7 @@ fn cmd_news(
     timeout: u64,
 ) {
     let goggles_resolved = a.goggles_args.resolve();
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
@@ -1565,7 +1566,7 @@ fn cmd_suggest(
         ("count", count_str.as_deref()),
         ("rich", a.rich.map(bool_str)),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/suggest/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1583,7 +1584,7 @@ fn cmd_spellcheck(
         ("lang", a.lang.as_deref()),
         ("country", a.country.as_deref()),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/spellcheck/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1735,7 +1736,7 @@ fn cmd_context(
     timeout: u64,
 ) {
     let goggles_resolved = a.goggles_args.resolve();
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("count", a.count.map(Into::into)),
@@ -1812,7 +1813,7 @@ fn cmd_places(
         ("safesearch", a.safesearch.as_deref()),
         ("spellcheck", a.spellcheck.map(bool_str)),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/place_search"));
     api::get(base, &path, key, timeout);
 }
@@ -1834,7 +1835,7 @@ fn cmd_pois(
         ("ui_lang", a.ui_lang.as_deref()),
         ("units", a.units.as_deref()),
     ];
-    let qs = api::build_query_repeated(params, &[("ids", &a.ids)], extras);
+    let qs = query::build_query_repeated(params, &[("ids", &a.ids)], extras);
     let mut headers = Vec::new();
     if let Some(ref v) = a.lat {
         validate_header_value("X-Loc-Lat", v);
@@ -1860,7 +1861,7 @@ fn cmd_descriptions(
         eprintln!("error: at least one POI ID is required");
         std::process::exit(1);
     }
-    let qs = api::build_query_repeated(&[], &[("ids", &a.ids)], extras);
+    let qs = query::build_query_repeated(&[], &[("ids", &a.ids)], extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/descriptions"));
     api::get(base, &path, key, timeout);
 }
