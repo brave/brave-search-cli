@@ -55,7 +55,7 @@ struct Cli {
     )]
     base_url: Option<String>,
 
-    /// Request timeout in seconds [default: 30]
+    /// Request timeout in seconds [default: 30; max: 86400]
     #[arg(long, global = true)]
     timeout: Option<u64>,
 
@@ -892,7 +892,7 @@ fn parse_extra(extras: &[String]) -> Vec<(&str, &str)> {
             Some((k, v)) if !k.is_empty() => (k, v),
             _ => {
                 eprintln!("error: --extra requires KEY=VALUE format, got: {entry}");
-                std::process::exit(1);
+                std::process::exit(2);
             }
         })
         .collect()
@@ -902,7 +902,7 @@ fn parse_extra(extras: &[String]) -> Vec<(&str, &str)> {
 fn merge_extras(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
     if let Err(msg) = api::merge_extra_into_json(body, extras) {
         eprintln!("error: {msg}");
-        std::process::exit(1);
+        std::process::exit(2);
     }
 }
 
@@ -913,6 +913,10 @@ fn bool_str(v: bool) -> &'static str {
 
 const DEFAULT_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_TIMEOUT: u64 = 30;
+/// A day. Nothing legitimate comes close, and a large enough value (measured: 2^63
+/// seconds) overflows the `Instant` maths inside ureq and panics — exit 101, or SIGABRT in
+/// release, neither of them a documented outcome.
+const MAX_TIMEOUT: u64 = 86_400;
 
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
@@ -928,11 +932,9 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     };
-
-    let api_key = resolve_api_key(cli.api_key, config.api_key, cfg_path);
 
     let base_raw: Cow<'static, str> = cli
         .base_url
@@ -943,14 +945,14 @@ fn main() {
         Ok(url) => url,
         Err(msg) => {
             eprintln!("error: {msg}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     };
 
     let timeout = cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT);
-    if timeout == 0 {
-        eprintln!("error: timeout must be greater than 0");
-        std::process::exit(1);
+    if timeout == 0 || timeout > MAX_TIMEOUT {
+        eprintln!("error: timeout must be between 1 and {MAX_TIMEOUT} seconds");
+        std::process::exit(2);
     }
 
     let extras = parse_extra(&cli.extra);
@@ -959,9 +961,16 @@ fn main() {
     if let Some(ep) = ep {
         if let Err(msg) = check_endpoint(ep) {
             eprintln!("error: {msg}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     }
+
+    // Last, because it can prompt and write a config file: a command with a bad flag must
+    // be rejected before bx asks the user for a key it will not get to use. Sources are
+    // trimmed, so the check catches an interior control character — which ureq rejects
+    // while building the request, surfacing as exit 5 rather than a bad argument.
+    let api_key = resolve_api_key(cli.api_key, config.api_key, cfg_path);
+    validate_header_value("X-Subscription-Token", &api_key);
 
     match cli.command {
         Command::Context(args) => cmd_context(&base, &api_key, args, &extras, ep, timeout),
@@ -1084,6 +1093,14 @@ fn parse_authority(authority: &str) -> Result<(&str, Option<u16>), String> {
             None if after.is_empty() => Ok((host, None)),
             _ => Err("invalid URL authority".into()),
         }
+    } else if authority.matches(':').count() > 1 {
+        // Only a bracketed literal may hold more than one colon. Unbracketed, `rsplit_once`
+        // reads `::1:8080` as the loopback host `::1` on port 8080 — so it passed
+        // validation and was then rejected by ureq as a network error.
+        Err(format!(
+            "invalid URL authority (got: {authority})\n\
+             hint: bracket an IPv6 address, as in http://[::1]:<port>"
+        ))
     } else {
         match authority.rsplit_once(':') {
             Some((host, p)) => Ok((host, Some(parse_port(p)?))),
@@ -1165,7 +1182,7 @@ fn resolve_api_key(
         Ok(k) => k,
         Err(msg) => {
             eprintln!("error: {msg}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     }
 }
@@ -1223,7 +1240,7 @@ fn check_header_value(name: &str, value: &str) -> Result<(), String> {
 fn validate_header_value(name: &str, value: &str) {
     if let Err(msg) = check_header_value(name, value) {
         eprintln!("error: {msg}");
-        std::process::exit(1);
+        std::process::exit(2);
     }
 }
 
@@ -1345,11 +1362,11 @@ fn resolve_goggles(value: &str) -> Cow<'_, str> {
             let mut limited = std::io::Read::take(std::io::stdin(), MAX_INPUT_SIZE + 1);
             if let Err(e) = std::io::Read::read_to_string(&mut limited, &mut buf) {
                 eprintln!("error: failed to read goggles from stdin: {e}");
-                std::process::exit(1);
+                std::process::exit(2);
             }
             if buf.len() as u64 > MAX_INPUT_SIZE {
                 eprintln!("error: goggles input exceeds maximum size ({MAX_INPUT_SIZE} bytes)");
-                std::process::exit(1);
+                std::process::exit(2);
             }
             Cow::Owned(buf)
         } else {
@@ -1358,11 +1375,11 @@ fn resolve_goggles(value: &str) -> Cow<'_, str> {
                     eprintln!(
                         "error: goggles file '{path}' exceeds maximum size ({MAX_INPUT_SIZE} bytes)"
                     );
-                    std::process::exit(1);
+                    std::process::exit(2);
                 }
                 Err(e) => {
                     eprintln!("error: failed to read goggles file '{path}': {e}");
-                    std::process::exit(1);
+                    std::process::exit(2);
                 }
                 _ => {}
             }
@@ -1370,7 +1387,7 @@ fn resolve_goggles(value: &str) -> Cow<'_, str> {
                 Ok(contents) => Cow::Owned(contents),
                 Err(e) => {
                     eprintln!("error: failed to read goggles file '{path}': {e}");
-                    std::process::exit(1);
+                    std::process::exit(2);
                 }
             }
         }
@@ -1604,17 +1621,17 @@ fn cmd_answers(
         let mut limited = std::io::Read::take(std::io::stdin().lock(), MAX_INPUT_SIZE + 1);
         if let Err(e) = std::io::Read::read_to_string(&mut limited, &mut buf) {
             eprintln!("error: failed to read JSON from stdin: {e}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
         if buf.len() as u64 > MAX_INPUT_SIZE {
             eprintln!("error: stdin JSON exceeds maximum size ({MAX_INPUT_SIZE} bytes)");
-            std::process::exit(1);
+            std::process::exit(2);
         }
         let mut body: serde_json::Value = match serde_json::from_str(&buf) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("error: invalid JSON on stdin: {e}");
-                std::process::exit(1);
+                std::process::exit(2);
             }
         };
         merge_extras(&mut body, extras);
@@ -1827,7 +1844,7 @@ fn cmd_pois(
 ) {
     if a.ids.is_empty() {
         eprintln!("error: at least one POI ID is required");
-        std::process::exit(1);
+        std::process::exit(2);
     }
     let params: &[(&str, Option<&str>)] = &[
         ("search_lang", a.search_lang.as_deref()),
@@ -1858,7 +1875,7 @@ fn cmd_descriptions(
 ) {
     if a.ids.is_empty() {
         eprintln!("error: at least one POI ID is required");
-        std::process::exit(1);
+        std::process::exit(2);
     }
     let qs = api::build_query_repeated(&[], &[("ids", &a.ids)], extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/descriptions"));
@@ -2087,6 +2104,27 @@ mod tests {
         assert!(check_base_url("http://[::1]garbage:8080").is_err()); // junk after bracket
         assert!(check_base_url("http://[::1%25eth0]:8080").is_err()); // zone ID
         assert!(check_base_url("http://[]:8080").is_err()); // empty brackets
+    }
+
+    #[test]
+    fn check_base_url_rejects_an_unbracketed_ipv6_address() {
+        // `::1:8080` used to pass: rsplit_once(':') read it as host `::1` port 8080, which
+        // is a loopback address, so bx accepted a URL ureq then refused — an argument
+        // mistake surfacing as exit 5 "invalid authority" rather than a usage error.
+        // The last is the full form of `::1`: matching on `::` alone missed it, and it
+        // reached ureq as `error: http: invalid authority`, exit 5.
+        for url in [
+            "http://::1:8080",
+            "http://::1",
+            "http://fe80::1:80",
+            "http://0:0:0:0:0:0:0:1:8080",
+        ] {
+            let err = check_base_url(url).unwrap_err();
+            assert!(err.contains("bracket an IPv6 address"), "{url}: {err}");
+        }
+        assert!(check_base_url("http://localhost:8080:9090").is_err());
+        // The bracketed forms are unaffected.
+        assert!(check_base_url("http://[::1]:8080").is_ok());
     }
 
     #[test]
