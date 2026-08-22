@@ -251,7 +251,7 @@ Settings are resolved in priority order: CLI flag > environment variable > confi
 |---------|----------|---------|------------|---------|
 | API key | `--api-key` | `BRAVE_SEARCH_API_KEY` | `api_key` | *(interactive prompt)* |
 | Base URL | `--base-url` | `BRAVE_SEARCH_BASE_URL` | `base_url` | `https://api.search.brave.com` |
-| Timeout | `--timeout` | — | `timeout` | `30`, or `300` with `--enable-research` |
+| Timeout | `--timeout` | — | `timeout` | `30`, or `300` with `--enable-research` (max `86400`) |
 
 Streamed answers have no total deadline: the timeout bounds each connection phase and each
 read, so a response that keeps arriving is never cut off, however long it runs. Deep
@@ -409,8 +409,8 @@ cat request.json | bx answers -
 | Code | Meaning | Agent action |
 |------|---------|-------------|
 | 0 | Success | Process results |
-| 1 | Client error (bad request) | Fix query/parameters |
-| 2 | Usage error (bad flags) | Fix CLI arguments (clap) |
+| 1 | The request was made; the result is unusable | Fix query/parameters |
+| 2 | Usage error — nothing was sent | Fix the CLI arguments, config, or input |
 | 3 | Auth/permission error (401/403) | Check API key or plan: `bx config show-key` |
 | 4 | Rate limited (429) | Retry after delay |
 | 5 | Server/network error | Retry with backoff |
@@ -425,7 +425,9 @@ hint: retry after a short delay, or upgrade plan for higher rate limits
 {"type":"ErrorResponse","error":{"code":"RATE_LIMITED","status":429,...}}
 ```
 
-Exit codes are differentiated — see [Exit Codes](#exit-codes) above.
+Exit codes are differentiated — see [Exit Codes](#exit-codes) above. The line between
+1 and 2 is whether a request was made: 2 means bx could not act on what it was given and
+never contacted the API, so retrying without changing the command will not help.
 
 ## Building from Source
 

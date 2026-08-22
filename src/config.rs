@@ -305,7 +305,7 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
                     Ok(k) => k,
                     Err(e) => {
                         eprintln!("error: {e}");
-                        std::process::exit(1);
+                        std::process::exit(2);
                     }
                 },
             };
@@ -317,7 +317,7 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
                 }
                 Err(e) => {
                     eprintln!("error: failed to save API key: {e}");
-                    std::process::exit(1);
+                    std::process::exit(2);
                 }
             }
         }
@@ -325,14 +325,14 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
             Some(key) => println!("{}", mask_key(&key)),
             None => {
                 eprintln!("no API key configured");
-                std::process::exit(1);
+                std::process::exit(2);
             }
         },
         super::ConfigCmd::Path => match resolve_config_path(config_path) {
             Some(p) => println!("{}", p.display()),
             None => {
                 eprintln!("error: cannot determine config directory");
-                std::process::exit(1);
+                std::process::exit(2);
             }
         },
         super::ConfigCmd::Show => {
@@ -340,7 +340,7 @@ pub fn handle_config(cmd: &super::ConfigCmd, config_path: Option<&Path>) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
-                    std::process::exit(1);
+                    std::process::exit(2);
                 }
             };
             let api_key = config
