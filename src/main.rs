@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod query;
 
 use std::borrow::Cow;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -835,9 +836,16 @@ const SUBCOMMANDS: &[&str] = &[
 /// argument is not a known subcommand (e.g. `bx "query"` → `bx context "query"`).
 /// Use `--` to force context for queries matching subcommand names: `bx -- web`.
 fn inject_default_subcommand() -> Vec<String> {
-    // Safety: args[0] is not used for security decisions — we skip it (i = 1) and only
-    // inspect subsequent args for subcommand routing. CWE-807 does not apply here.
-    let args: Vec<String> = std::env::args().collect(); // nosemgrep: rust.lang.security.args.args
+    // `env::args()` panics on an argument that is not valid UTF-8; report it instead.
+    // `{bad:?}` escapes, so a newline in argv cannot forge a second diagnostic line.
+    // args[0] is only skipped over, never used for a decision (nosemgrep CWE-807).
+    let args: Vec<String> = std::env::args_os() // nosemgrep: rust.lang.security.args.args
+        .map(std::ffi::OsString::into_string)
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|bad| {
+            eprintln!("error: argument is not valid UTF-8: {bad:?}");
+            std::process::exit(2);
+        });
     inject_default_subcommand_impl(args)
 }
 
@@ -900,7 +908,7 @@ fn parse_extra(extras: &[String]) -> Vec<(&str, &str)> {
 
 /// Merges --extra pairs into a JSON body, exiting on error.
 fn merge_extras(body: &mut serde_json::Value, extras: &[(&str, &str)]) {
-    if let Err(msg) = api::merge_extra_into_json(body, extras) {
+    if let Err(msg) = query::merge_extra_into_json(body, extras) {
         eprintln!("error: {msg}");
         std::process::exit(2);
     }
@@ -920,6 +928,8 @@ const DEFAULT_RESEARCH_TIMEOUT: u64 = 300;
 /// seconds) overflows the `Instant` maths inside ureq and panics — exit 101, or SIGABRT in
 /// release, neither of them a documented outcome.
 const MAX_TIMEOUT: u64 = 86_400;
+/// The body key `--enable-research` writes and `answers_timeout` reads; they must agree.
+const ENABLE_RESEARCH: &str = "enable_research";
 
 fn main() {
     let cli = Cli::parse_from(inject_default_subcommand());
@@ -1440,7 +1450,7 @@ fn cmd_web(
     timeout: u64,
 ) {
     let goggles_resolved = a.goggles_args.resolve();
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
@@ -1503,7 +1513,7 @@ fn cmd_images(
         ("safesearch", a.safesearch.as_deref()),
         ("spellcheck", a.spellcheck.map(bool_str)),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/images/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1516,7 +1526,7 @@ fn cmd_videos(
     ep: Option<&str>,
     timeout: u64,
 ) {
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
@@ -1548,7 +1558,7 @@ fn cmd_news(
     timeout: u64,
 ) {
     let goggles_resolved = a.goggles_args.resolve();
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("ui_lang", a.ui_lang.map(Into::into)),
@@ -1589,7 +1599,7 @@ fn cmd_suggest(
         ("count", count_str.as_deref()),
         ("rich", a.rich.map(bool_str)),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/suggest/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1607,7 +1617,7 @@ fn cmd_spellcheck(
         ("lang", a.lang.as_deref()),
         ("country", a.country.as_deref()),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/spellcheck/search"));
     api::get(base, &path, key, timeout);
 }
@@ -1616,10 +1626,29 @@ fn cmd_spellcheck(
 /// stream nothing while synthesising. Read from the finished body so `--enable-research`
 /// and `--extra enable_research=…` agree, in both stdin and flag mode.
 fn answers_timeout(configured: Option<u64>, body: &serde_json::Value) -> u64 {
-    configured.unwrap_or(match body["enable_research"].as_bool() {
+    configured.unwrap_or(match body[ENABLE_RESEARCH].as_bool() {
         Some(true) => DEFAULT_RESEARCH_TIMEOUT,
         _ => DEFAULT_TIMEOUT,
     })
+}
+
+/// Sends a finished `answers` body. Transport and timeout both come from the body, so
+/// `--extra stream=…` is honoured and the flag and stdin paths cannot drift apart.
+/// `default_stream` applies only when the body's `stream` is absent or not a boolean.
+fn send_answers(
+    base: &str,
+    path: &str,
+    key: &str,
+    body: &serde_json::Value,
+    configured_timeout: Option<u64>,
+    default_stream: bool,
+) {
+    let timeout = answers_timeout(configured_timeout, body);
+    if body["stream"].as_bool().unwrap_or(default_stream) {
+        api::post_json_stream(base, path, key, body, &[], timeout);
+    } else {
+        api::post_json(base, path, key, body, &[], timeout);
+    }
 }
 
 fn cmd_answers(
@@ -1653,12 +1682,8 @@ fn cmd_answers(
         };
         merge_extras(&mut body, extras);
 
-        let timeout = answers_timeout(configured_timeout, &body);
-        if body["stream"].as_bool().unwrap_or(true) {
-            api::post_json_stream(base, path, key, &body, &[], timeout);
-        } else {
-            api::post_json(base, path, key, &body, &[], timeout);
-        }
+        // A stdin body says whether it streams; the API's own default is `true`.
+        send_answers(base, path, key, &body, configured_timeout, true);
         return;
     }
 
@@ -1691,7 +1716,7 @@ fn cmd_answers(
         obj.insert("enable_entities".into(), true.into());
     }
     if a.enable_research {
-        obj.insert("enable_research".into(), true.into());
+        obj.insert(ENABLE_RESEARCH.into(), true.into());
     }
     if let Some(v) = a.research_allow_thinking {
         obj.insert("research_allow_thinking".into(), v.into());
@@ -1753,15 +1778,7 @@ fn cmd_answers(
 
     merge_extras(&mut body, extras);
 
-    let timeout = answers_timeout(configured_timeout, &body);
-    // Read the transport from the merged body, as the stdin path already does: otherwise
-    // `--extra stream=false` sends a non-streaming request and parses the JSON reply as
-    // SSE, which yields exit 0 and no output at all.
-    if body["stream"].as_bool().unwrap_or(stream) {
-        api::post_json_stream(base, path, key, &body, &[], timeout);
-    } else {
-        api::post_json(base, path, key, &body, &[], timeout);
-    }
+    send_answers(base, path, key, &body, configured_timeout, stream);
 }
 
 fn cmd_context(
@@ -1773,7 +1790,7 @@ fn cmd_context(
     timeout: u64,
 ) {
     let goggles_resolved = a.goggles_args.resolve();
-    let mut body = api::build_json_body(&[
+    let mut body = query::build_json_body(&[
         ("country", a.country.map(Into::into)),
         ("search_lang", a.search_lang.map(Into::into)),
         ("count", a.count.map(Into::into)),
@@ -1850,7 +1867,7 @@ fn cmd_places(
         ("safesearch", a.safesearch.as_deref()),
         ("spellcheck", a.spellcheck.map(bool_str)),
     ];
-    let qs = api::build_query(params, extras);
+    let qs = query::build_query(params, extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/place_search"));
     api::get(base, &path, key, timeout);
 }
@@ -1872,7 +1889,7 @@ fn cmd_pois(
         ("ui_lang", a.ui_lang.as_deref()),
         ("units", a.units.as_deref()),
     ];
-    let qs = api::build_query_repeated(params, &[("ids", &a.ids)], extras);
+    let qs = query::build_query_repeated(params, &[("ids", &a.ids)], extras);
     let mut headers = Vec::new();
     if let Some(ref v) = a.lat {
         validate_header_value("X-Loc-Lat", v);
@@ -1898,7 +1915,7 @@ fn cmd_descriptions(
         eprintln!("error: at least one POI ID is required");
         std::process::exit(2);
     }
-    let qs = api::build_query_repeated(&[], &[("ids", &a.ids)], extras);
+    let qs = query::build_query_repeated(&[], &[("ids", &a.ids)], extras);
     let path = format!("{}{qs}", ep.unwrap_or("/res/v1/local/descriptions"));
     api::get(base, &path, key, timeout);
 }
@@ -1922,6 +1939,40 @@ mod tests {
         // Non-bool or absent means no research: fail fast.
         assert_eq!(
             answers_timeout(None, &serde_json::json!({"enable_research": "yes"})),
+            DEFAULT_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn answers_timeout_only_treats_a_real_boolean_as_research() {
+        // `--extra enable_research=1` becomes the integer 1, not `true`, so it keeps the
+        // 30s default and research dies at 30s — the very bug this default exists to fix.
+        // Pinned as a known trap: the API takes a boolean, and `--extra` is a raw escape
+        // hatch that does not coerce.
+        for not_a_bool in [
+            serde_json::json!({"enable_research": 1}),
+            serde_json::json!({"enable_research": "true"}),
+            serde_json::json!({"enable_research": "yes"}),
+            serde_json::json!({"enable_research": null}),
+        ] {
+            assert_eq!(answers_timeout(None, &not_a_bool), DEFAULT_TIMEOUT);
+        }
+        assert_eq!(
+            answers_timeout(None, &serde_json::json!({"enable_research": false})),
+            DEFAULT_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn answers_timeout_tolerates_a_body_that_is_not_an_object() {
+        // `echo '[]' | bx answers -` reaches here. Indexing a non-object yields Null
+        // rather than panicking, and Null is not research.
+        assert_eq!(
+            answers_timeout(None, &serde_json::json!([])),
+            DEFAULT_TIMEOUT
+        );
+        assert_eq!(
+            answers_timeout(None, &serde_json::json!(null)),
             DEFAULT_TIMEOUT
         );
     }

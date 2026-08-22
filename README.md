@@ -417,7 +417,7 @@ cat request.json | bx answers -
 
 ## Error Handling
 
-Errors are printed to stderr with a human-readable summary, recovery hints, and the full JSON error body:
+Errors are printed to stderr with a human-readable summary, recovery hints, and the JSON error body (truncated past 1 KiB):
 
 ```
 error: rate limited (429) — Request rate limit exceeded for plan.
