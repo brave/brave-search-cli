@@ -278,6 +278,8 @@ bx --config ~/.config/brave-search/dev.json web "test"
 
 **Security tip:** Prefer the env var or config file over `--api-key`, which is visible in process listings. Use `bx config set-key` without an argument to enter the key interactively, avoiding shell history.
 
+`bx config set-key` writes the file `0600` and its directory `0700` on Linux and macOS. On Windows it sets no ACL, so the file inherits whatever `%APPDATA%\brave-search` grants — restrict that directory yourself if the machine has other users.
+
 ### Local Proxy
 
 You can point `bx` at a local reverse proxy instead of the Brave API directly. This is useful for sandboxed environments where credentials are managed outside the sandbox.

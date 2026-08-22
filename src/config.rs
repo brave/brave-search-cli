@@ -68,41 +68,67 @@ pub fn load_config(override_path: Option<&Path>) -> Result<Config, String> {
     }
 }
 
-/// Saves the config to a JSON file with restricted permissions.
+/// Writes `contents` to `path`, which must not already exist, readable only by its owner
+/// on unix. A failed write removes the file again, best-effort, so a partial API key is
+/// not left lying around.
+fn create_private(path: &Path, contents: &str) -> io::Result<()> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    // sync before the caller renames: otherwise a crash can leave the rename applied and
+    // the contents not — a config that is present, atomic, and empty.
+    let written = file
+        .write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        fs::remove_file(path).ok();
+    }
+    written
+}
+
+/// Saves the config, readable only by its owner on unix.
 fn save_config(config: &Config, override_path: Option<&Path>) -> io::Result<()> {
     let path = resolve_config_path(override_path)
         .ok_or_else(|| io::Error::other("cannot determine config directory"))?;
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("config path has no parent directory"))?;
-    fs::create_dir_all(dir)?;
-
+    // Tighten a directory we created, and the default one on every save — a restore that
+    // left it 0755 lets other users list the key file. Never an existing `--config`
+    // parent, which may be the working directory; an empty parent is the working
+    // directory, from a bare `--config config.json`.
     #[cfg(unix)]
-    {
+    let tighten = !dir.as_os_str().is_empty() && (!dir.exists() || override_path.is_none());
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    if tighten {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
 
     let contents = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(contents.as_bytes())?;
+    // Write then rename: the rename is atomic, so an interrupted run cannot truncate the
+    // config, the 0600 mode always applies because the file is one we just created, and a
+    // symlink at `path` is replaced rather than written through. Pid and clock keep a
+    // concurrent `set-key`, or a leftover from a killed one, from blocking this save, and
+    // the name replaces the config's basename rather than extending it, so a long one
+    // cannot push it past NAME_MAX.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = path.with_file_name(format!(".bx-{}-{stamp}.tmp", std::process::id()));
+    create_private(&tmp, &contents)?;
+    let renamed = fs::rename(&tmp, &path);
+    if renamed.is_err() {
+        fs::remove_file(&tmp).ok();
     }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(&path, contents)?;
-    }
-
-    Ok(())
+    renamed
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -167,26 +193,25 @@ fn save_api_key(key: &str, config_path: Option<&Path>) -> io::Result<()> {
     let trimmed = key.trim();
     validate_api_key(trimmed)?;
     let mut config = load_config(config_path).unwrap_or_else(|e| {
-        eprintln!("warning: {e}; other settings may be reset");
+        // Silent when nothing is there to lose: on a first `set-key` the config not
+        // existing yet is the normal case, not a warning.
+        if resolve_config_path(config_path).is_some_and(|p| p.exists()) {
+            eprintln!("warning: {e}; other settings may be reset");
+        }
         Config::default()
     });
     config.api_key = Some(trimmed.to_string());
     save_config(&config, config_path)
 }
 
-/// Masks an API key for display.
+/// Masks an API key: enough to recognise which key it is, never enough to reconstruct it.
+/// Never reveals half — first-4 plus last-4 needs 17 characters, first-4 alone needs 9.
 fn mask_key(key: &str) -> String {
-    if key.is_empty() {
-        return "...".into();
-    }
-    if !key.is_ascii() {
-        "****...".into()
-    } else if key.len() > 8 {
-        format!("{}...{}", &key[..4], &key[key.len() - 4..])
-    } else if key.len() > 4 {
-        format!("{}...", &key[..4])
-    } else {
-        format!("{}...", &key[..1])
+    match key.len() {
+        _ if !key.is_ascii() => "****...".into(),
+        17.. => format!("{}...{}", &key[..4], &key[key.len() - 4..]),
+        9..=16 => format!("{}...", &key[..4]),
+        _ => "****...".into(),
     }
 }
 
@@ -552,6 +577,53 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn save_config_tightens_permissions_on_an_existing_file() {
+        // `OpenOptions::mode` only applies to a file it creates, so a config that already
+        // existed world-readable would have taken the API key at its old mode.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::write(&p, "{}").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+
+        save_api_key("BSAtestkey123456", Some(p.as_path())).unwrap();
+
+        let mode = fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "API key left in a world-readable file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_config_leaves_an_existing_directory_alone() {
+        // `--config ./cfg.json` makes the CWD the parent. Chmodding it to 0700 because we
+        // happened to write a file in it is not ours to do.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        save_api_key("BSAtestkey123456", Some(&dir.path().join("config.json"))).unwrap();
+
+        let mode = fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "chmodded a directory we did not create");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_config_replaces_a_symlink_instead_of_writing_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let canary = dir.path().join("canary");
+        let link = dir.path().join("config.json");
+        fs::write(&canary, "do not touch").unwrap();
+        std::os::unix::fs::symlink(&canary, &link).unwrap();
+
+        save_api_key("BSAtestkey123456", Some(link.as_path())).unwrap();
+
+        assert_eq!(fs::read_to_string(&canary).unwrap(), "do not touch");
+        assert!(!fs::symlink_metadata(&link).unwrap().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn save_config_dir_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -561,6 +633,30 @@ mod tests {
         save_config(&c, Some(p.as_path())).unwrap();
         let mode = fs::metadata(&sub).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_save_leaves_no_temp_file_behind() {
+        // The rename is what fails late — here because the target is a directory, which
+        // it must still be afterwards, with no temp file left beside it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        fs::create_dir(&p).unwrap();
+
+        assert!(save_config(&Config::default(), Some(p.as_path())).is_err());
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .filter(|n| n.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "left behind {leftovers:?}");
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o170000,
+            0o40000
+        );
     }
 
     #[test]
@@ -582,22 +678,24 @@ mod tests {
 
     #[test]
     fn mask_long_key() {
-        assert_eq!(mask_key("abcdefghijkl"), "abcd...ijkl");
+        // A real Brave key is 30+ characters: 8 shown out of 32 is a safe fingerprint.
+        assert_eq!(mask_key("BSA_abcdefghijklmnopqrstuvwxyz12"), "BSA_...yz12");
     }
 
     #[test]
-    fn mask_exactly_8_chars() {
-        assert_eq!(mask_key("abcdefgh"), "abcd...");
+    fn mask_never_reveals_most_of_a_short_key() {
+        // The boundary that matters: at 9 characters, first-4 + last-4 would leave exactly
+        // one character secret.
+        assert_eq!(mask_key("abcdefghi"), "abcd...");
+        assert_eq!(mask_key("abcdefghijklmnop"), "abcd...");
+        assert_eq!(mask_key("abcdefghijklmnopq"), "abcd...nopq");
     }
 
     #[test]
-    fn mask_exactly_4_chars() {
-        assert_eq!(mask_key("abcd"), "a...");
-    }
-
-    #[test]
-    fn mask_exactly_1_char() {
-        assert_eq!(mask_key("a"), "a...");
+    fn mask_hides_keys_too_short_to_fingerprint() {
+        assert_eq!(mask_key("abcdefgh"), "****...");
+        assert_eq!(mask_key("abcd"), "****...");
+        assert_eq!(mask_key("a"), "****...");
     }
 
     #[test]
@@ -695,26 +793,10 @@ mod tests {
     }
 
     #[test]
-    fn migrate_legacy_key_saves_to_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.json");
-        migrate_legacy_key("testkey12345", Some(p.as_path())).unwrap();
-        let c = load_config(Some(p.as_path())).unwrap();
-        assert_eq!(c.api_key.as_deref(), Some("testkey12345"));
-    }
-
-    #[test]
-    fn migrate_legacy_key_preserves_other_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("config.json");
-        fs::write(&p, r#"{"timeout":42}"#).unwrap();
-        migrate_legacy_key("testkey12345", Some(p.as_path())).unwrap();
-        let c = load_config(Some(p.as_path())).unwrap();
-        assert_eq!(c.api_key.as_deref(), Some("testkey12345"));
-        assert_eq!(c.timeout, Some(42));
-    }
-
-    #[test]
+    // The only `migrate_legacy_key` test: the others duplicated `save_api_key`'s and, by
+    // reaching `remove_legacy_key_file`, deleted the developer's real key file on every
+    // `cargo test` — that function resolves the real config dir, which `--config` cannot
+    // redirect. This one returns before it.
     fn migrate_legacy_key_invalid_key_returns_err() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("config.json");
