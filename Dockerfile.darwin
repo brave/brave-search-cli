@@ -10,6 +10,12 @@ RUN rustup target add "$TARGET"
 WORKDIR /src
 COPY . .
 
+# Reserve Mach-O header space so the release signer can insert LC_CODE_SIGNATURE
+# in place. zig emits an ad-hoc signature only for arm64, which Apple Silicon
+# requires to exec; the x86_64 output has none, and only 8 of the 16 bytes of
+# header slack that adding the load command needs.
+ENV RUSTFLAGS="-C link-arg=-Wl,-headerpad,0x1000"
+
 # strip=false: Rust's built-in strip corrupts aarch64-apple-darwin binaries
 # when cross-compiled via zigbuild (https://github.com/rust-cross/cargo-zigbuild/issues/50).
 # Only arm64 needs it; unconditional so both Apple targets share one Dockerfile.
