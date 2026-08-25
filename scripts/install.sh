@@ -8,7 +8,7 @@
 #
 # Env: VERSION (default: latest), BX_INSTALL_DIR (default: ~/.local/bin)
 # Requires: curl or wget, sha256sum or shasum
-# Platforms: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64 (macOS 11+)
+# Platforms: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64 (macOS 11.7.1+)
 #
 # Security: HTTPS + SHA256 verification. No sudo, no eval.
 # Does not protect against compromised releases (would need signing).
@@ -126,7 +126,7 @@ main() {
         # dyld refuses a binary below its minimum macOS, the likely cause here.
         if [ "$os" = "darwin" ]; then
             error "installed binary failed to execute" \
-                  "bx requires macOS 11 Big Sur or later (this is $(sw_vers -productVersion 2>/dev/null || echo unknown))" \
+                  "bx requires macOS 11.7.1 or later (this is $(sw_vers -productVersion 2>/dev/null || echo unknown))" \
                   "on an older macOS, build from source instead: cargo build --release"
         fi
         error "installed binary failed to execute" \

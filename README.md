@@ -6,7 +6,7 @@ One binary, JSON in/out, no runtime dependencies. `bx context` replaces search +
 
 ## Quick Start
 
-**macOS/Linux** (macOS 11 Big Sur or later)
+**macOS/Linux** (macOS 11.7.1 or later)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.sh | sh
 ```
@@ -453,8 +453,9 @@ make windows-arm64   # → dist/bx-<version>-windows-arm64.exe
 make dist-all        # → all of the above
 ```
 
-Both macOS binaries **require macOS 11 Big Sur or later**. Zig sets the
-deployment target; `MACOSX_DEPLOYMENT_TARGET` does not override it.
+Both macOS binaries **require macOS 11.7.1 or later** — zig sets that deployment
+target and `MACOSX_DEPLOYMENT_TARGET` does not override it. The `smoke-darwin`
+job asserts it, so a toolchain bump that raises the floor fails CI.
 
 ## Testing
 

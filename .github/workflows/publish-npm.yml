@@ -80,8 +80,14 @@ jobs:
           stage() {
             local target="$1" npm_platform="$2" ext=""
             case "$target" in windows-*) ext=".exe" ;; esac
-            install -Dm755 "$tmp/bx-${VERSION}-${target}${ext}" \
-              "npm/platforms/${npm_platform}/bin/bx${ext}"
+            local src="$tmp/bx-${VERSION}-${target}${ext}"
+
+            # A tag from before a platform was added has no asset for it. Say so,
+            # rather than failing on a bare "install: cannot stat".
+            [ -f "$src" ] ||
+              { echo "::error::$TAG has no $target asset; it predates that platform and cannot be published"; exit 1; }
+
+            install -Dm755 "$src" "npm/platforms/${npm_platform}/bin/bx${ext}"
           }
 
           stage linux-amd64   linux-x64
