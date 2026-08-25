@@ -251,6 +251,7 @@ test('spawn: a non-executable binary reports 127, not a crash', posixOnly, () =>
 // platform that silently resolves nothing.
 const SUPPORTED = {
   'darwin arm64': '@brave/brave-search-cli-darwin-arm64',
+  'darwin x64': '@brave/brave-search-cli-darwin-x64',
   'linux x64': '@brave/brave-search-cli-linux-x64',
   'linux arm64': '@brave/brave-search-cli-linux-arm64',
   'win32 x64': '@brave/brave-search-cli-win32-x64',
@@ -296,14 +297,13 @@ test('platform: 32-bit Linux is unsupported', () => {
   assert.match(r.stderr, /unsupported platform \(linux ia32\)/)
 })
 
-// darwin x64 is the one unsupported pair people actually hit: an Intel Mac, or
-// Apple Silicon running an x64 Node under Rosetta. Each needs a different fix.
-test('platform: darwin x64 distinguishes Rosetta from a real Intel Mac', () => {
-  const r = run([], { fakePlatform: 'darwin x64' })
-  assert.equal(r.code, 127)
-  assert.match(r.stderr, /unsupported platform \(darwin x64\)/)
-  assert.match(r.stderr, /Rosetta, reinstall Node as arm64/)
-  assert.match(r.stderr, /Intel Mac, build from source/)
+// process.arch is the Node build's architecture, not the CPU's, so an x64 Node
+// on Apple Silicon reports "darwin x64" and runs the Intel binary via Rosetta.
+test('platform: darwin x64 runs the Intel binary, Rosetta included', posixOnly, () => {
+  stub(NODE_STUB, { name: SUPPORTED['darwin x64'], bin: 'bx' })
+  const r = run(['a', 'b'], { fakePlatform: 'darwin x64' })
+  assert.equal(r.code, 0)
+  assert.deepEqual(argvOf(r), ['a', 'b'])
 })
 
 // ── packaging ─────────────────────────────────────────────────────────

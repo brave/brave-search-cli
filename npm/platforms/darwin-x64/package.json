@@ -1,0 +1,21 @@
+{
+  "name": "@brave/brave-search-cli-darwin-x64",
+  "version": "0.0.0",
+  "description": "darwin-x64 binary for @brave/brave-search-cli",
+  "homepage": "https://github.com/brave/brave-search-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brave/brave-search-cli.git"
+  },
+  "license": "MPL-2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true
+}

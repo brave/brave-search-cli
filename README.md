@@ -6,7 +6,7 @@ One binary, JSON in/out, no runtime dependencies. `bx context` replaces search +
 
 ## Quick Start
 
-**macOS/Linux**
+**macOS/Linux** (macOS 11 Big Sur or later)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.sh | sh
 ```
@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.ps1 | iex"
 ```
 
-**npm** (requires Node ≥ 16; no Intel-Mac build)
+**npm** (requires Node ≥ 16)
 ```bash
 npm install -g @brave/brave-search-cli
 ```
@@ -446,11 +446,15 @@ On Windows, run these targets from Git Bash or WSL. Running `make` from native `
 ```bash
 make linux-amd64     # → dist/bx-<version>-linux-amd64
 make linux-arm64     # → dist/bx-<version>-linux-arm64
+make darwin-amd64    # → dist/bx-<version>-darwin-amd64
 make darwin-arm64    # → dist/bx-<version>-darwin-arm64
 make windows-amd64   # → dist/bx-<version>-windows-amd64.exe
 make windows-arm64   # → dist/bx-<version>-windows-arm64.exe
 make dist-all        # → all of the above
 ```
+
+Both macOS binaries **require macOS 11 Big Sur or later**. Zig sets the
+deployment target; `MACOSX_DEPLOYMENT_TARGET` does not override it.
 
 ## Testing
 
