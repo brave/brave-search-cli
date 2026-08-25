@@ -2,5 +2,20 @@
     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
     "extends": [
         "local>brave/renovate-config"
+    ],
+    "packageRules": [
+        {
+            "description": "Bumping zig raises the macOS floor the README promises; Dockerfile.windows-arm64 keeps tracking latest.",
+            "matchManagers": [
+                "dockerfile"
+            ],
+            "matchFileNames": [
+                "Dockerfile.darwin"
+            ],
+            "matchPackageNames": [
+                "ghcr.io/rust-cross/cargo-zigbuild"
+            ],
+            "enabled": false
+        }
     ]
 }
