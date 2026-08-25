@@ -30,6 +30,12 @@ linux-arm64:
 	docker build -t $(BINARY)-$@ --build-arg TARGET=aarch64-unknown-linux-musl .
 	$(call docker-extract,$(BINARY)-$@,$@)
 
+.PHONY: darwin-amd64
+darwin-amd64:
+	docker build -f Dockerfile.darwin -t $(BINARY)-$@ \
+	  --build-arg TARGET=x86_64-apple-darwin .
+	$(call docker-extract,$(BINARY)-$@,$@)
+
 .PHONY: darwin-arm64
 darwin-arm64:
 	docker build -f Dockerfile.darwin -t $(BINARY)-$@ \
@@ -49,7 +55,7 @@ windows-arm64:
 	$(call docker-extract,$(BINARY)-$@,$@,.exe)
 
 .PHONY: dist-all
-dist-all: linux-amd64 linux-arm64 darwin-arm64 windows-amd64 windows-arm64
+dist-all: linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64
 
 .PHONY: release
 release:

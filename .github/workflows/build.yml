@@ -70,6 +70,7 @@ jobs:
         include:
           - target: linux-amd64
           - target: linux-arm64
+          - target: darwin-amd64
           - target: darwin-arm64
           - target: windows-amd64
           - target: windows-arm64
@@ -86,3 +87,49 @@ jobs:
           name: bx-${{ matrix.target }}
           path: dist/bx-*-${{ matrix.target }}*
           if-no-files-found: error
+
+  # The darwin binaries are cross-compiled on Linux, so nothing in the build job
+  # can execute one. macos-15-intel is the last x86_64 image GitHub offers: when
+  # it retires in August 2027, darwin-amd64 loses its only execution check, and
+  # shipping it further means self-hosted Intel hardware or no verification.
+  # https://github.com/actions/runner-images/issues/13045
+  smoke-darwin:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-amd64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      # The floor the README and install.sh promise. zig picks it implicitly, so
+      # a toolchain bump could raise it; assert it rather than trust it.
+      MACOS_MIN: 11.7.1
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bx-${{ matrix.target }}
+
+      - name: Run ${{ matrix.target }} on ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          bin=$(echo bx-*-${{ matrix.target }})
+          chmod +x "$bin" # artifacts are zipped, which drops the executable bit
+
+          # --version needs no API key and makes no network call.
+          version=$("./$bin" --version)
+          echo "$version"
+
+          expected="bx $(echo "$bin" | sed 's/^bx-//;s/-${{ matrix.target }}$//')"
+          [ "$version" = "$expected" ] ||
+            { echo "::error::expected \"$expected\", got \"$version\""; exit 1; }
+
+          # Running here only proves it works on this runner's macOS, not that
+          # it still loads on the oldest one we claim to support.
+          minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+          echo "minos $minos"
+          [ "$minos" = "$MACOS_MIN" ] ||
+            { echo "::error::minos is $minos, but the docs promise $MACOS_MIN"; exit 1; }

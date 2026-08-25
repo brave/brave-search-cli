@@ -6,6 +6,7 @@ const { signals } = require('node:os').constants
 
 const PLATFORM_PACKAGES = {
   'darwin arm64': '@brave/brave-search-cli-darwin-arm64',
+  'darwin x64': '@brave/brave-search-cli-darwin-x64',
   'linux x64': '@brave/brave-search-cli-linux-x64',
   'linux arm64': '@brave/brave-search-cli-linux-arm64',
   'win32 x64': '@brave/brave-search-cli-win32-x64',
@@ -24,14 +25,7 @@ const key = `${process.platform} ${process.arch}`
 const pkg = PLATFORM_PACKAGES[key]
 
 if (!pkg) {
-  // process.arch is the Node build's architecture, not the CPU's, so x64 Node
-  // under Rosetta lands here on hardware that is otherwise supported.
-  const hint =
-    key === 'darwin x64'
-      ? 'no Intel macOS binary exists. Under Rosetta, reinstall Node as arm64; ' +
-        'on a real Intel Mac, build from source: cargo build --release.'
-      : HELP
-  fail(`unsupported platform (${key}). ${hint}`)
+  fail(`unsupported platform (${key}). ${HELP}`)
 }
 
 const binName = process.platform === 'win32' ? 'bx.exe' : 'bx'

@@ -11,7 +11,8 @@ WORKDIR /src
 COPY . .
 
 # strip=false: Rust's built-in strip corrupts aarch64-apple-darwin binaries
-# when cross-compiled via zigbuild (https://github.com/rust-cross/cargo-zigbuild/issues/50)
+# when cross-compiled via zigbuild (https://github.com/rust-cross/cargo-zigbuild/issues/50).
+# Only arm64 needs it; unconditional so both Apple targets share one Dockerfile.
 RUN cargo zigbuild --release --target "$TARGET" \
     --config profile.release.strip=false
 

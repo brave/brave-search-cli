@@ -8,7 +8,7 @@
 #
 # Env: VERSION (default: latest), BX_INSTALL_DIR (default: ~/.local/bin)
 # Requires: curl or wget, sha256sum or shasum
-# Platforms: linux-amd64, linux-arm64, darwin-arm64
+# Platforms: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64 (macOS 11.7.1+)
 #
 # Security: HTTPS + SHA256 verification. No sudo, no eval.
 # Does not protect against compromised releases (would need signing).
@@ -56,12 +56,6 @@ main() {
         *)             error "unsupported architecture: $(uname -m)" \
                              "only x86_64 and arm64 are supported" ;;
     esac
-
-    # No darwin-amd64 build — only darwin-arm64.
-    if [ "$os" = "darwin" ] && [ "$arch" = "amd64" ]; then
-        error "macOS x86_64 (Intel) binaries are not available" \
-              "build from source instead: cargo build --release"
-    fi
 
     platform="${os}-${arch}"
 
@@ -129,6 +123,12 @@ main() {
     install -m 755 "${tmp_dir}/${binary_name}" "${install_dir}/${BIN}"
 
     if ! "${install_dir}/${BIN}" --version >/dev/null 2>&1; then
+        # dyld refuses a binary below its minimum macOS, the likely cause here.
+        if [ "$os" = "darwin" ]; then
+            error "installed binary failed to execute" \
+                  "bx requires macOS 11.7.1 or later (this is $(sw_vers -productVersion 2>/dev/null || echo unknown))" \
+                  "on an older macOS, build from source instead: cargo build --release"
+        fi
         error "installed binary failed to execute" \
               "this may indicate a platform mismatch or a corrupted download"
     fi
