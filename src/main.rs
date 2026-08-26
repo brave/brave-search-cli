@@ -591,16 +591,16 @@ struct AnswersArgs {
     #[arg(long)]
     max_completion_tokens: Option<u32>,
 
-    /// Enable citations (requires streaming)
-    #[arg(long)]
+    /// Enable citations (streaming only, exclusive with --enable-research)
+    #[arg(long, conflicts_with = "no_stream")]
     enable_citations: bool,
 
-    /// Enable entities (requires streaming)
-    #[arg(long)]
+    /// Enable entities (streaming only, exclusive with --enable-research)
+    #[arg(long, conflicts_with = "no_stream")]
     enable_entities: bool,
 
-    /// Enable research mode (requires streaming)
-    #[arg(long)]
+    /// Enable research mode (streaming only; carries its own citations and entities)
+    #[arg(long, conflicts_with_all = ["enable_citations", "enable_entities", "no_stream"])]
     enable_research: bool,
 
     /// Allow thinking in research mode
