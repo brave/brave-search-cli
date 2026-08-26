@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -8,7 +8,9 @@ use ureq::tls::{PemItem, RootCerts, TlsConfig};
 
 const USER_AGENT: &str = concat!("bx/", env!("CARGO_PKG_VERSION"));
 
-/// Prevent accidentally loading an unbounded local file into memory.
+/// The largest CA bundle bx reads. Reading stops one byte past this bound, so the
+/// cap holds for a file of any size — including special files whose metadata
+/// reports a length of zero.
 const MAX_CA_BUNDLE_SIZE: usize = 5 * 1024 * 1024;
 
 /// Process-wide TLS configuration. The CLI initializes this at most once,
@@ -78,8 +80,13 @@ pub fn configure_ca_bundle(path: &Path) -> Result<(), String> {
 }
 
 fn load_ca_bundle(path: &Path) -> Result<TlsConfig, String> {
-    let pem =
-        fs::read(path).map_err(|e| format!("cannot read CA bundle {}: {e}", path.display()))?;
+    let read_err = |e| format!("cannot read CA bundle {}: {e}", path.display());
+    let mut pem = Vec::new();
+    fs::File::open(path)
+        .map_err(read_err)?
+        .take(MAX_CA_BUNDLE_SIZE as u64 + 1)
+        .read_to_end(&mut pem)
+        .map_err(read_err)?;
     if pem.len() > MAX_CA_BUNDLE_SIZE {
         return Err(format!(
             "CA bundle {} exceeds the {} MiB limit",
@@ -98,6 +105,7 @@ fn load_ca_bundle(path: &Path) -> Result<TlsConfig, String> {
                     path.display()
                 ));
             }
+            // PemItem is #[non_exhaustive]; it yields certificates and keys today.
             _ => {}
         }
     }
@@ -1025,6 +1033,16 @@ MC4CAQAwBQYDK2VwBCIEINgyZRKOrPCTwT/FwG1OawCFL1fr7k6gaZ4HBMB245lM
 
         let error = load_ca_bundle(&path).unwrap_err();
         assert!(error.contains("cannot read CA bundle"));
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_oversize_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, vec![b'x'; MAX_CA_BUNDLE_SIZE + 1]).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("exceeds the 5 MiB limit"), "{error}");
     }
 
     #[test]
