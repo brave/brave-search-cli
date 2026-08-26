@@ -173,6 +173,21 @@ fn config_subcommands_reject_an_unusable_file_the_same_way() {
 }
 
 #[test]
+fn incompatible_answers_options_are_a_usage_error() {
+    // The server 422s these; rejecting them here turns a wasted round trip and a misleading
+    // exit 1 into exit 2. All sixteen combinations are a unit test — this pins the exit code.
+    let out = bx(&["answers", "q", "--enable-research", "--enable-citations"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+
+    // Citations and entities are the one pair the API accepts; it must still be sent.
+    let out = bx(&["answers", "q", "--enable-citations", "--enable-entities"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(5), "{stderr}");
+}
+
+#[test]
 fn a_reachable_failure_is_not_swept_into_the_usage_code() {
     // The control for every assertion above: exit 2 must mean "nothing was sent", so a
     // command that gets as far as opening a socket has to report something else.

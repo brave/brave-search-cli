@@ -401,6 +401,15 @@ bx answers "what changed in React 19?" --enable-research  # deep research
 bx answers "Hello" --model brave                          # faster model
 ```
 
+`--enable-citations`, `--enable-entities`, and `--enable-research` all require streaming, so
+none combines with `--no-stream`. Citations and entities are not supported in research mode,
+but are fine together. Rejected combinations exit 2, nothing sent:
+
+```bash
+bx answers "what changed in React 19?" --enable-research --enable-citations
+# error: the argument '--enable-research' cannot be used with '--enable-citations'
+```
+
 ### Stdin Mode
 
 Pass `-` to read a full JSON request body from stdin:
