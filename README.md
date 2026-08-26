@@ -307,6 +307,18 @@ The proxy receives requests at the configured base URL (e.g. `http://127.0.0.1:8
 
 Only loopback addresses are allowed for `http://` URLs — non-loopback IPs and arbitrary hostnames are rejected. The `localhost` hostname is resolved at startup and rewritten to a literal IP to prevent DNS rebinding.
 
+### Custom CA Bundle
+
+For enterprise networks that terminate TLS with a private certificate authority, pass a PEM CA bundle explicitly:
+
+```bash
+bx --ca-bundle /path/to/company-ca.pem "your query"
+# or
+BRAVE_SEARCH_CA_BUNDLE=/path/to/company-ca.pem bx "your query"
+```
+
+The custom bundle replaces the default WebPKI roots for that process. Certificate verification and hostname validation remain enabled; `bx` does not provide an insecure TLS mode.
+
 ## Commands
 
 | Command | Description | Output Shape |

@@ -67,6 +67,16 @@ fn a_bad_flag_value_is_a_usage_error() {
 }
 
 #[test]
+fn an_unusable_ca_bundle_is_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing-ca.pem");
+    let out = bx(&["web", "q", "--ca-bundle", missing.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("cannot read CA bundle"), "{stderr}");
+}
+
+#[test]
 fn a_missing_required_id_is_a_usage_error() {
     // `bx pois` and `bx descriptions` take their IDs positionally, and clap allows zero of
     // them. Sending a request with no ids would just earn a 422, so bx stops first — and
