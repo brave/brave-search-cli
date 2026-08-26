@@ -401,9 +401,9 @@ bx answers "what changed in React 19?" --enable-research  # deep research
 bx answers "Hello" --model brave                          # faster model
 ```
 
-`--enable-citations`, `--enable-entities`, and `--enable-research` are streaming-only, and
-research mode carries its own citations and entities. Combining any of them with each other
-or with `--no-stream` is rejected as a usage error (exit 2):
+`--enable-citations`, `--enable-entities`, and `--enable-research` all require streaming, so
+none combines with `--no-stream`. Citations and entities are not supported in research mode,
+but are fine together. Rejected combinations exit 2, nothing sent:
 
 ```bash
 bx answers "what changed in React 19?" --enable-research --enable-citations

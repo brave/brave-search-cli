@@ -102,7 +102,7 @@ enum Command {
     /// AI-grounded answers — OpenAI-compatible, streaming, SOTA SimpleQA F1=94.1%
     ///
     /// Web-grounded AI answers. Streams by default (SSE, one JSON chunk per line).
-    /// Use --no-stream for a single JSON response.
+    /// Use --no-stream for a single JSON response (not with the --enable-* flags).
     ///
     /// Use when you need a synthesized answer rather than raw source material.
     /// Best for: explanations, comparisons, "how does X work" questions.
@@ -591,15 +591,15 @@ struct AnswersArgs {
     #[arg(long)]
     max_completion_tokens: Option<u32>,
 
-    /// Enable citations (streaming only, exclusive with --enable-research)
+    /// Inline citation tags (streaming only; not in research mode)
     #[arg(long, conflicts_with = "no_stream")]
     enable_citations: bool,
 
-    /// Enable entities (streaming only, exclusive with --enable-research)
+    /// Inline entity tags (streaming only; not in research mode)
     #[arg(long, conflicts_with = "no_stream")]
     enable_entities: bool,
 
-    /// Enable research mode (streaming only; carries its own citations and entities)
+    /// Iterative deep research instead of a single search (streaming only)
     #[arg(long, conflicts_with_all = ["enable_citations", "enable_entities", "no_stream"])]
     enable_research: bool,
 
@@ -1926,7 +1926,43 @@ fn cmd_descriptions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, error::ErrorKind};
+
+    // ── answers flag conflicts ───────────────────────────────────────
+
+    /// All sixteen on/off combinations of the four flags, so a future edit cannot quietly
+    /// widen the rule (rejecting `--enable-citations --enable-entities`, which the API
+    /// supports) or narrow it. The predicate is the API's, spelled out.
+    #[test]
+    fn answers_rejects_exactly_the_combinations_the_api_rejects() {
+        for bits in 0..16u8 {
+            let [no_stream, citations, entities, research] =
+                [0, 1, 2, 3].map(|i: u8| bits >> i & 1 == 1);
+            let args = [
+                Some("bx"),
+                Some("answers"),
+                Some("q"),
+                no_stream.then_some("--no-stream"),
+                citations.then_some("--enable-citations"),
+                entities.then_some("--enable-entities"),
+                research.then_some("--enable-research"),
+            ];
+            // All three need the stream to deliver their tags, and citations and entities
+            // are not supported in research mode.
+            let rejected = (no_stream && (citations || entities || research))
+                || (research && (citations || entities));
+            let parsed = Cli::try_parse_from(args.into_iter().flatten());
+            assert_eq!(
+                parsed.is_err(),
+                rejected,
+                "{:?}",
+                args.into_iter().flatten().collect::<Vec<_>>()
+            );
+            if let Err(e) = parsed {
+                assert_eq!(e.kind(), ErrorKind::ArgumentConflict, "{bits:b}");
+            }
+        }
+    }
 
     // ── answers_timeouts ─────────────────────────────────────────────
 
@@ -1972,8 +2008,8 @@ mod tests {
         assert_eq!(answers_timeouts(Some(2), &research), (2, 2));
     }
 
-    /// The transport does not enter into it: `--no-stream --enable-research` still gets the long
-    /// budget, because a blocking research call is exactly the one that runs for minutes.
+    /// The transport does not enter into it. The flags can no longer ask for a blocking
+    /// research call, but `--extra enable_research=true` and a stdin body still can.
     #[test]
     fn answers_timeouts_ignores_the_transport() {
         let blocking = serde_json::json!({"stream": false, "enable_research": true});

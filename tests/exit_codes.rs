@@ -174,31 +174,17 @@ fn config_subcommands_reject_an_unusable_file_the_same_way() {
 
 #[test]
 fn incompatible_answers_options_are_a_usage_error() {
-    // The API rejects each of these with a 422, which arrives as exit 1 — "fix the
-    // parameters" — after a request that never had a chance. Research mode carries its own
-    // citations and entities, and all three need the streaming transport to deliver them.
-    for args in [
-        vec!["answers", "q", "--enable-research", "--enable-citations"],
-        vec!["answers", "q", "--enable-research", "--enable-entities"],
-        vec!["answers", "q", "--enable-research", "--no-stream"],
-        vec!["answers", "q", "--enable-citations", "--no-stream"],
-        vec!["answers", "q", "--enable-entities", "--no-stream"],
-    ] {
-        let out = bx(&args);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
-        assert!(stderr.contains("cannot be used with"), "{args:?}: {stderr}");
-    }
-    // Each flag on its own still reaches the network.
-    for flag in [
-        "--enable-research",
-        "--enable-citations",
-        "--enable-entities",
-    ] {
-        let out = bx(&["answers", "q", flag]);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(5), "{flag}: {stderr}");
-    }
+    // The server 422s these; rejecting them here turns a wasted round trip and a misleading
+    // exit 1 into exit 2. All sixteen combinations are a unit test — this pins the exit code.
+    let out = bx(&["answers", "q", "--enable-research", "--enable-citations"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+
+    // Citations and entities are the one pair the API accepts; it must still be sent.
+    let out = bx(&["answers", "q", "--enable-citations", "--enable-entities"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(5), "{stderr}");
 }
 
 #[test]
