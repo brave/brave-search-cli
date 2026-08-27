@@ -74,6 +74,7 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 name = "brave-search-cli"
 version = "1.6.0"
 dependencies = [
+ "base64",
  "clap",
  "dirs",
  "serde",

@@ -499,6 +499,7 @@ pub fn post_json_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use std::io::Cursor;
 
     // ── agent configuration ──────────────────────────────────────────
@@ -987,10 +988,27 @@ kL94O//ACgZIe4oyVogm
 -----END CERTIFICATE-----
 "#;
 
-    const TEST_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEINgyZRKOrPCTwT/FwG1OawCFL1fr7k6gaZ4HBMB245lM
------END PRIVATE KEY-----
-"#;
+    /// Wraps DER bytes in a PEM section carrying `label`.
+    fn pem_block(label: &str, der: &[u8]) -> String {
+        let body = base64::engine::general_purpose::STANDARD.encode(der);
+        format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")
+    }
+
+    /// A PKCS#8 Ed25519 structure whose 32-byte seed is all zeros. `parse_pem`
+    /// classifies a section by its label and base64-decodes the body without
+    /// inspecting it, so these bytes reach the private-key branch of the guard.
+    fn zeroed_pkcs8_der() -> Vec<u8> {
+        let mut der = vec![
+            0x30, 0x2e, // SEQUENCE, 46 bytes
+            0x02, 0x01, 0x00, // INTEGER 0 — PKCS#8 version
+            0x30, 0x05, // SEQUENCE, 5 bytes — AlgorithmIdentifier
+            0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 — Ed25519
+            0x04, 0x22, // OCTET STRING, 34 bytes — privateKey
+            0x04, 0x20, // OCTET STRING, 32 bytes — Ed25519 seed
+        ];
+        der.extend_from_slice(&[0u8; 32]);
+        der
+    }
 
     #[test]
     fn load_ca_bundle_accepts_certificate_pem() {
@@ -1049,7 +1067,7 @@ MC4CAQAwBQYDK2VwBCIEINgyZRKOrPCTwT/FwG1OawCFL1fr7k6gaZ4HBMB245lM
     fn load_ca_bundle_rejects_private_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ca.pem");
-        fs::write(&path, TEST_PRIVATE_KEY_PEM).unwrap();
+        fs::write(&path, pem_block("PRIVATE KEY", &zeroed_pkcs8_der())).unwrap();
 
         let error = load_ca_bundle(&path).unwrap_err();
         assert!(error.contains("contains a private key"));
