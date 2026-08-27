@@ -56,13 +56,13 @@ struct Cli {
     )]
     base_url: Option<String>,
 
-    /// PEM bundle of trusted CA certificates (replaces default WebPKI roots)
+    /// Path to a PEM bundle of trusted CA certificates (replaces default WebPKI roots)
     #[arg(
         long,
         env = "BRAVE_SEARCH_CA_BUNDLE",
         global = true,
         hide_env_values = true,
-        value_name = "PEM"
+        value_name = "PATH"
     )]
     ca_bundle: Option<std::path::PathBuf>,
 
