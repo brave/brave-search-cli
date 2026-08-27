@@ -11,23 +11,26 @@ use std::process::{Command, Output};
 /// reach production. The key goes in the environment, not on the command line, so a test
 /// may pass its own `--api-key` without clap rejecting a duplicate flag.
 fn bx(args: &[&str]) -> Output {
-    bx_raw(args, &["--base-url", "http://127.0.0.1:1"])
+    bx_raw(args, &["--base-url", "http://127.0.0.1:1"], &[])
 }
 
-fn bx_raw(args: &[&str], extra: &[&str]) -> Output {
+fn bx_raw(args: &[&str], extra: &[&str], env: &[(&str, &str)]) -> Output {
     let cfg = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(cfg.path(), "{}").unwrap();
-    Command::new(env!("CARGO_BIN_EXE_bx"))
-        .args(args)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bx"));
+    cmd.args(args)
         .args(extra)
         .arg("--config")
         .arg(cfg.path())
         .env("BRAVE_SEARCH_API_KEY", "TEST")
         .env_remove("BRAVE_API_KEY")
         .env_remove("BRAVE_SEARCH_BASE_URL")
-        .env("NO_PROXY", "*")
-        .output()
-        .unwrap()
+        .env_remove("BRAVE_SEARCH_CA_BUNDLE")
+        .env("NO_PROXY", "*");
+    for &(k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.output().unwrap()
 }
 
 #[test]
@@ -45,7 +48,7 @@ fn a_rejected_base_url_is_a_usage_error() {
         "http://127.0.0.1.nip.io:8080", // DNS service bypass
         "http://::1:8080",              // unbracketed IPv6
     ] {
-        let out = bx_raw(&["web", "q"], &["--base-url", url]);
+        let out = bx_raw(&["web", "q"], &["--base-url", url], &[]);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{url}: {stderr}");
     }
@@ -74,6 +77,23 @@ fn an_unusable_ca_bundle_is_a_usage_error() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("cannot read CA bundle"), "{stderr}");
+}
+
+#[test]
+fn the_ca_bundle_flag_outranks_the_environment() {
+    // Both paths are missing, so whichever one bx resolves is the one it names.
+    let dir = tempfile::tempdir().unwrap();
+    let from_flag = dir.path().join("from-flag.pem");
+    let from_env = dir.path().join("from-env.pem");
+    let out = bx_raw(
+        &["web", "q", "--ca-bundle", from_flag.to_str().unwrap()],
+        &["--base-url", "http://127.0.0.1:1"],
+        &[("BRAVE_SEARCH_CA_BUNDLE", from_env.to_str().unwrap())],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("from-flag.pem"), "{stderr}");
+    assert!(!stderr.contains("from-env.pem"), "{stderr}");
 }
 
 #[test]
