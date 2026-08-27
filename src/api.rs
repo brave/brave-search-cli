@@ -81,6 +81,15 @@ pub fn configure_ca_bundle(path: &Path) -> Result<(), String> {
 
 fn load_ca_bundle(path: &Path) -> Result<TlsConfig, String> {
     let read_err = |e| format!("cannot read CA bundle {}: {e}", path.display());
+    // stat resolves the type without opening the path: a regular file is the one kind
+    // whose read reaches EOF on its own, while opening a FIFO waits for a writer.
+    if !fs::metadata(path).map_err(read_err)?.is_file() {
+        return Err(format!(
+            "CA bundle {} is not a regular file",
+            path.display()
+        ));
+    }
+
     let mut pem = Vec::new();
     fs::File::open(path)
         .map_err(read_err)?
@@ -1071,6 +1080,43 @@ kL94O//ACgZIe4oyVogm
 
         let error = load_ca_bundle(&path).unwrap_err();
         assert!(error.contains("contains a private key"));
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::create_dir(&path).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("is not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_ca_bundle_rejects_a_fifo() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            return; // mkfifo is unavailable here
+        }
+
+        // A reader-side open on a FIFO waits for a writer, so the call is bounded: the
+        // type check has to answer before the timeout, on this side of the open.
+        let (tx, rx) = mpsc::channel();
+        let probe = path.clone();
+        std::thread::spawn(move || tx.send(load_ca_bundle(&probe).unwrap_err()));
+
+        let error = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("load_ca_bundle blocked on the FIFO");
+        assert!(error.contains("is not a regular file"), "{error}");
     }
 
     // ── read_line_bounded ────────────────────────────────────────────
