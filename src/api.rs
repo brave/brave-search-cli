@@ -126,6 +126,22 @@ fn load_ca_bundle(path: &Path) -> Result<TlsConfig, String> {
         ));
     }
 
+    // rustls skips a certificate it cannot turn into a trust anchor, leaving a store
+    // no server can chain to, so each one is converted here while the path is still
+    // at hand to name.
+    let mut anchors = rustls::RootCertStore::empty();
+    for (n, cert) in certs.iter().enumerate() {
+        anchors
+            .add(rustls::pki_types::CertificateDer::from(cert.der()))
+            .map_err(|e| {
+                format!(
+                    "invalid certificate {} in CA bundle {}: {e}",
+                    n + 1,
+                    path.display()
+                )
+            })?;
+    }
+
     Ok(TlsConfig::builder()
         .root_certs(RootCerts::new_with_certs(&certs))
         .build())
@@ -1080,6 +1096,29 @@ kL94O//ACgZIe4oyVogm
 
         let error = load_ca_bundle(&path).unwrap_err();
         assert!(error.contains("contains a private key"));
+    }
+
+    #[test]
+    fn load_ca_bundle_accepts_several_certificates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, format!("{TEST_CA_PEM}{TEST_CA_PEM}")).unwrap();
+
+        let config = load_ca_bundle(&path).unwrap();
+        let RootCerts::Specific(certs) = config.root_certs() else {
+            panic!("expected specific roots, got {:?}", config.root_certs());
+        };
+        assert_eq!(certs.len(), 2);
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_a_certificate_that_is_not_x509() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, pem_block("CERTIFICATE", &[0x00])).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("invalid certificate 1"), "{error}");
     }
 
     #[test]
