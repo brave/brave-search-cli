@@ -29,7 +29,7 @@
     "@brave/brave-search-cli-darwin-arm64": "0.0.0",
     "@brave/brave-search-cli-darwin-x64": "0.0.0",
     "@brave/brave-search-cli-linux-x64": "0.0.0",
-    "@brave/brave-search-cli-linux-arm64": "0.0.0",
+    "@brave/brave-search-cli-linux-arm64": "1.5.0",
     "@brave/brave-search-cli-win32-x64": "0.0.0",
     "@brave/brave-search-cli-win32-arm64": "0.0.0"
   }
