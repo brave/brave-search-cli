@@ -4,7 +4,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/brave/brave-search-cli/main/scripts/install.sh | sh
-#   VERSION=v1.6.0 curl -fsSL .../scripts/install.sh | sh
+#   VERSION=v1.7.0 curl -fsSL .../scripts/install.sh | sh
 #
 # Env: VERSION (default: latest), BX_INSTALL_DIR (default: ~/.local/bin)
 # Requires: curl or wget, sha256sum or shasum
