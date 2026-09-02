@@ -1,7 +1,21 @@
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use ureq::tls::{PemItem, RootCerts, TlsConfig};
+
 const USER_AGENT: &str = concat!("bx/", env!("CARGO_PKG_VERSION"));
+
+/// The largest CA bundle bx reads. Reading stops one byte past this bound, so the
+/// cap holds for a file of any size — including special files whose metadata
+/// reports a length of zero.
+const MAX_CA_BUNDLE_SIZE: usize = 5 * 1024 * 1024;
+
+/// Process-wide TLS configuration. The CLI initializes this at most once,
+/// before any request is made.
+static TLS_CONFIG: OnceLock<TlsConfig> = OnceLock::new();
 
 /// Cap on one SSE line: a peer can withhold the newline forever, so the line buffer needs a
 /// bound of its own. Checked between fills, so the real ceiling is this plus one `BufReader`
@@ -53,9 +67,94 @@ fn read_line_bounded<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> io::Resul
     }
 }
 
+/// Configures an explicit PEM CA bundle for all HTTP agents.
+///
+/// This is opt-in. When unset, ureq retains its default WebPKI roots. When set,
+/// the supplied certificates become the complete trust-root set; certificate
+/// and hostname verification remain enabled.
+pub fn configure_ca_bundle(path: &Path) -> Result<(), String> {
+    let tls_config = load_ca_bundle(path)?;
+    TLS_CONFIG
+        .set(tls_config)
+        .map_err(|_| "TLS configuration was already initialized".to_string())
+}
+
+fn load_ca_bundle(path: &Path) -> Result<TlsConfig, String> {
+    let read_err = |e| format!("cannot read CA bundle {}: {e}", path.display());
+    // stat resolves the type without opening the path: a regular file is the one kind
+    // whose read reaches EOF on its own, while opening a FIFO waits for a writer.
+    if !fs::metadata(path).map_err(read_err)?.is_file() {
+        return Err(format!(
+            "CA bundle {} is not a regular file",
+            path.display()
+        ));
+    }
+
+    let mut pem = Vec::new();
+    fs::File::open(path)
+        .map_err(read_err)?
+        .take(MAX_CA_BUNDLE_SIZE as u64 + 1)
+        .read_to_end(&mut pem)
+        .map_err(read_err)?;
+    if pem.len() > MAX_CA_BUNDLE_SIZE {
+        return Err(format!(
+            "CA bundle {} exceeds the {} MiB limit",
+            path.display(),
+            MAX_CA_BUNDLE_SIZE / (1024 * 1024)
+        ));
+    }
+
+    let mut certs = Vec::new();
+    for item in ureq::tls::parse_pem(&pem) {
+        match item.map_err(|e| format!("invalid CA bundle {}: {e}", path.display()))? {
+            PemItem::Certificate(cert) => certs.push(cert),
+            PemItem::PrivateKey(_) => {
+                return Err(format!(
+                    "CA bundle {} contains a private key",
+                    path.display()
+                ));
+            }
+            // PemItem is #[non_exhaustive]; it yields certificates and keys today.
+            _ => {}
+        }
+    }
+
+    if certs.is_empty() {
+        return Err(format!(
+            "CA bundle {} contains no PEM certificates",
+            path.display()
+        ));
+    }
+
+    // rustls skips a certificate it cannot turn into a trust anchor, leaving a store
+    // no server can chain to, so each one is converted here while the path is still
+    // at hand to name.
+    let mut anchors = rustls::RootCertStore::empty();
+    for (n, cert) in certs.iter().enumerate() {
+        anchors
+            .add(rustls::pki_types::CertificateDer::from(cert.der()))
+            .map_err(|e| {
+                format!(
+                    "invalid certificate {} in CA bundle {}: {e}",
+                    n + 1,
+                    path.display()
+                )
+            })?;
+    }
+
+    Ok(TlsConfig::builder()
+        .root_certs(RootCerts::new_with_certs(&certs))
+        .build())
+}
+
+fn tls_config() -> TlsConfig {
+    TLS_CONFIG.get().cloned().unwrap_or_default()
+}
+
 fn agent(timeout_secs: u64) -> ureq::Agent {
     ureq::Agent::new_with_config(
         ureq::config::Config::builder()
+            .tls_config(tls_config())
             .http_status_as_error(false)
             .max_redirects(0)
             .timeout_global(Some(Duration::from_secs(timeout_secs)))
@@ -78,6 +177,7 @@ fn streaming_agent(dial_secs: u64, read_secs: u64) -> ureq::Agent {
     let dial = Some(Duration::from_secs(dial_secs));
     ureq::Agent::new_with_config(
         ureq::config::Config::builder()
+            .tls_config(tls_config())
             .http_status_as_error(false)
             .max_redirects(0)
             .timeout_resolve(dial)
@@ -424,6 +524,7 @@ pub fn post_json_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use std::io::Cursor;
 
     // ── agent configuration ──────────────────────────────────────────
@@ -889,6 +990,172 @@ mod tests {
         let mut out = Dribble(Vec::new());
         assert!(write_record(&mut out, b"{\"n\":0}"));
         assert_eq!(out.0, b"{\"n\":0}\n");
+    }
+
+    const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDCzCCAfOgAwIBAgIUBfAmNZdoIAZsb4Q478qFjzIQY+4wDQYJKoZIhvcNAQEL
+BQAwFTETMBEGA1UEAwwKYngtdGVzdC1jYTAeFw0yNjA4MjYxNjAwMzZaFw0zNjA4
+MjMxNjAwMzZaMBUxEzARBgNVBAMMCmJ4LXRlc3QtY2EwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQCokCDFgvDNkWRgOIir7dOh63rGq8ECuoXXa53iniAA
+uipw4LBP5D4xSgMbGK7fJlgJcYlIom4GkNytxes8oqwlC1zl3Aal5X3gv4Zof481
+ow7xWRjzoXPHXLyJtT/sBkMo44x1lXG4usS+PiMEt2SDrAdrChPXGDlF/Fs+LKfG
+cNJDeNe7nMHS5LZZR4Cn9f1tMPm3hHwEnLnx+P4cADcySd0pQAwWXxEj/Qr0pXXh
+Az+9m+Em8Kx6ajrV1J169Vi48BFhlrDynt4BFngaJiBGiAbKJEZ/yxGsw4q8WCjM
+CzQR9vLaNvAQzrEa0i0NP6gaiZer4RqdyFtrVvDBdhKzAgMBAAGjUzBRMB0GA1Ud
+DgQWBBQh8EWmPu1uuigO+J/6VHyqCQ6qATAfBgNVHSMEGDAWgBQh8EWmPu1uuigO
++J/6VHyqCQ6qATAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQA0
+cv47BeHkoI/mWEi42SkyZUSwjpElDqrXVW3EWuB+QOD44GTi7mPz0evBls/H8oCu
+XakAfe6IPZwCZuc9UDnJ/Y7B+PhER6+hxlak/JRx/Zv19FbNRVPUoy7BbG9VyGLk
+GtP57plpPHmhfO4BOpR7AfrtUPVxcgPvL9klPML71pXNrTxhXn15VqSL5gcjQhmj
+S5sByNCzf4QBSL0J9qKKih7d/aex9V5LbfR8WMUqSmmFhgbXPaKRGzvTt42TlwUh
+N+91wkWoXD9AwvA7U5gI4x7IsiD24vVyveZ1uT02tsGjl3QP6n/ziKyauJm3r0DT
+kL94O//ACgZIe4oyVogm
+-----END CERTIFICATE-----
+"#;
+
+    /// Wraps DER bytes in a PEM section carrying `label`.
+    fn pem_block(label: &str, der: &[u8]) -> String {
+        let body = base64::engine::general_purpose::STANDARD.encode(der);
+        format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")
+    }
+
+    /// A PKCS#8 Ed25519 structure whose 32-byte seed is all zeros. `parse_pem`
+    /// classifies a section by its label and base64-decodes the body without
+    /// inspecting it, so these bytes reach the private-key branch of the guard.
+    fn zeroed_pkcs8_der() -> Vec<u8> {
+        let mut der = vec![
+            0x30, 0x2e, // SEQUENCE, 46 bytes
+            0x02, 0x01, 0x00, // INTEGER 0 — PKCS#8 version
+            0x30, 0x05, // SEQUENCE, 5 bytes — AlgorithmIdentifier
+            0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 — Ed25519
+            0x04, 0x22, // OCTET STRING, 34 bytes — privateKey
+            0x04, 0x20, // OCTET STRING, 32 bytes — Ed25519 seed
+        ];
+        der.extend_from_slice(&[0u8; 32]);
+        der
+    }
+
+    #[test]
+    fn load_ca_bundle_accepts_certificate_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, TEST_CA_PEM).unwrap();
+
+        let config = load_ca_bundle(&path).unwrap();
+        assert!(matches!(config.root_certs(), RootCerts::Specific(_)));
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, "").unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("contains no PEM certificates"));
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_malformed_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\nnot-base64\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("invalid CA bundle"));
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.pem");
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("cannot read CA bundle"));
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_oversize_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, vec![b'x'; MAX_CA_BUNDLE_SIZE + 1]).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("exceeds the 5 MiB limit"), "{error}");
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_private_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, pem_block("PRIVATE KEY", &zeroed_pkcs8_der())).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("contains a private key"));
+    }
+
+    #[test]
+    fn load_ca_bundle_accepts_several_certificates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, format!("{TEST_CA_PEM}{TEST_CA_PEM}")).unwrap();
+
+        let config = load_ca_bundle(&path).unwrap();
+        let RootCerts::Specific(certs) = config.root_certs() else {
+            panic!("expected specific roots, got {:?}", config.root_certs());
+        };
+        assert_eq!(certs.len(), 2);
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_a_certificate_that_is_not_x509() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::write(&path, pem_block("CERTIFICATE", &[0x00])).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("invalid certificate 1"), "{error}");
+    }
+
+    #[test]
+    fn load_ca_bundle_rejects_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        fs::create_dir(&path).unwrap();
+
+        let error = load_ca_bundle(&path).unwrap_err();
+        assert!(error.contains("is not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_ca_bundle_rejects_a_fifo() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            return; // mkfifo is unavailable here
+        }
+
+        // A reader-side open on a FIFO waits for a writer, so the call is bounded: the
+        // type check has to answer before the timeout, on this side of the open.
+        let (tx, rx) = mpsc::channel();
+        let probe = path.clone();
+        std::thread::spawn(move || tx.send(load_ca_bundle(&probe).unwrap_err()));
+
+        let error = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("load_ca_bundle blocked on the FIFO");
+        assert!(error.contains("is not a regular file"), "{error}");
     }
 
     // ── read_line_bounded ────────────────────────────────────────────

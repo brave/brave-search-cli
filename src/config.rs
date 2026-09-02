@@ -778,7 +778,6 @@ mod tests {
         assert!(!dir.path().join("gone").exists(), "wrote through the link");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failed_save_leaves_no_temp_file_behind() {
         // The rename is what fails late — here because the target is a directory, which

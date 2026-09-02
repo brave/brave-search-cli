@@ -56,6 +56,16 @@ struct Cli {
     )]
     base_url: Option<String>,
 
+    /// Path to a PEM bundle of trusted CA certificates (replaces default WebPKI roots)
+    #[arg(
+        long,
+        env = "BRAVE_SEARCH_CA_BUNDLE",
+        global = true,
+        hide_env_values = true,
+        value_name = "PATH"
+    )]
+    ca_bundle: Option<std::path::PathBuf>,
+
     /// Request timeout in seconds [default: 30; 300 with --enable-research; max: 86400]
     #[arg(long, global = true)]
     timeout: Option<u64>,
@@ -847,6 +857,7 @@ fn inject_default_subcommand_impl(mut args: Vec<String>) -> Vec<String> {
     const VALUE_FLAGS: &[&str] = &[
         "--api-key",
         "--base-url",
+        "--ca-bundle",
         "--timeout",
         "--config",
         "--extra",
@@ -962,6 +973,13 @@ fn main() {
     if timeout == 0 || timeout > MAX_TIMEOUT {
         eprintln!("error: timeout must be between 1 and {MAX_TIMEOUT} seconds");
         std::process::exit(2);
+    }
+
+    if let Some(path) = cli.ca_bundle.as_deref() {
+        if let Err(e) = api::configure_ca_bundle(path) {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
     }
 
     let extras = parse_extra(&cli.extra);
@@ -2547,6 +2565,22 @@ mod tests {
         assert_eq!(
             inject_default_subcommand_impl(args("bx --api-key KEY query")),
             args("bx --api-key KEY context query")
+        );
+    }
+
+    #[test]
+    fn inject_skips_ca_bundle_value() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --ca-bundle ca.pem query")),
+            args("bx --ca-bundle ca.pem context query")
+        );
+    }
+
+    #[test]
+    fn inject_skips_ca_bundle_equals_form() {
+        assert_eq!(
+            inject_default_subcommand_impl(args("bx --ca-bundle=ca.pem query")),
+            args("bx --ca-bundle=ca.pem context query")
         );
     }
 
