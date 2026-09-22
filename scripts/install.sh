@@ -74,10 +74,15 @@ main() {
             "set VERSION=vX.Y.Z manually, or check ${RELEASES}"
     fi
 
+    # vX.Y.Z only: the version is interpolated into the download URL and a temp path.
     case "$VERSION" in
         v[0-9]*.[0-9]*.[0-9]*) ;;
         *) error "invalid version format: ${VERSION}" \
                  "expected format: vX.Y.Z (e.g., v1.0.0)" ;;
+    esac
+    case "${VERSION#v}" in
+        *[!0-9.]*|*..*|*.|*.*.*.*) error "invalid version format: ${VERSION}" \
+                                          "expected format: vX.Y.Z (e.g., v1.0.0)" ;;
     esac
 
     version_num="${VERSION#v}"

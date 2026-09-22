@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::{NamedTempFile, TempDir};
 
+mod common;
+use common::{Bounded, bx_in, finish};
+
 /// How long a stalling server holds the connection open. Must comfortably exceed the
 /// `--timeout` under test so that bx's timeout fires first, not the server hanging up.
 const STALL: Duration = Duration::from_secs(15);
@@ -172,10 +175,8 @@ fn write_chunk(sock: &mut TcpStream, body: &str) -> std::io::Result<()> {
     sock.flush()
 }
 
-/// Everything the binary can read from its environment, redirected away from the
-/// developer's own: both API-key variables, the base URL, every proxy variable ureq's
-/// `Proxy::try_from_env` consults, and the home directories `dirs` derives the config path
-/// from — `resolve_api_key`'s legacy fallback would otherwise *migrate and delete* a real
+/// The sandbox, pointed at the local server. Its private home matters: `resolve_api_key`'s
+/// legacy fallback would otherwise *migrate and delete* a real
 /// `~/.config/brave-search/api_key`.
 ///
 /// The temporaries are returned because they must outlive the child: a `NamedTempFile`
@@ -191,21 +192,12 @@ fn bx(port: u16) -> (Command, NamedTempFile, TempDir) {
 fn bx_argv(port: u16, argv: &[&str]) -> (Command, NamedTempFile, TempDir) {
     let cfg = NamedTempFile::new().unwrap();
     let home = TempDir::new().unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bx"));
+    let mut cmd = bx_in(home.path());
     cmd.args(argv)
         .args(["--api-key", "TEST"])
         .args(["--base-url", &format!("http://127.0.0.1:{port}")])
         .arg("--config")
-        .arg(cfg.path())
-        .env("HOME", home.path())
-        .env("XDG_CONFIG_HOME", home.path().join(".config"))
-        .env_remove("BRAVE_SEARCH_API_KEY")
-        .env_remove("BRAVE_API_KEY")
-        .env_remove("BRAVE_SEARCH_BASE_URL")
-        .env("NO_PROXY", "*");
-    for var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
-        cmd.env_remove(var).env_remove(var.to_lowercase());
-    }
+        .arg(cfg.path());
     (cmd, cfg, home)
 }
 
@@ -213,7 +205,7 @@ fn bx_argv(port: u16, argv: &[&str]) -> (Command, NamedTempFile, TempDir) {
 fn run_bx(port: u16, args: &[&str]) -> (Output, Duration) {
     let (mut cmd, _cfg, _home) = bx(port);
     let started = Instant::now();
-    let output = cmd.args(args).output().unwrap();
+    let output = cmd.args(args).bounded_output();
     (output, started.elapsed())
 }
 
@@ -224,9 +216,8 @@ fn stream_outlives_the_timeout_while_chunks_keep_arriving() {
     // 3s of streaming under a 2s timeout: fine, because no single gap comes close to 2s.
     // Anchoring the deadline to the response headers instead would abort this at 2s.
     //
-    // This is also the tripwire for the ureq upgrade. ureq#1194 (merged, unreleased as of
-    // 3.4.0) makes `timeout_recv_body` a *total* budget rather than one re-armed per read; the
-    // day that ships, this test goes red and `streaming_agent` needs rethinking, not the test.
+    // Also the tripwire for the `=3.4.0` pin: ureq 3.4.1 (#1194) makes `timeout_recv_body` a
+    // total budget, which turns this red.
     const CHUNKS: usize = 10;
     let port = serve_sse(CHUNKS, Duration::from_millis(300), true);
     let (out, elapsed) = run_bx(port, &["--timeout", "2"]);
@@ -327,7 +318,7 @@ fn a_config_file_timeout_bounds_a_research_stream() {
     std::fs::write(cfg.path(), r#"{"timeout": 2}"#).unwrap();
 
     let started = Instant::now();
-    let out = cmd.arg("--enable-research").output().unwrap();
+    let out = cmd.arg("--enable-research").bounded_output();
     let elapsed = started.elapsed();
 
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -419,11 +410,9 @@ fn a_timeout_mid_line_emits_nothing_partial() {
 
 #[test]
 fn a_connection_that_cannot_be_made_is_a_network_error() {
-    // Nothing is listening: the generic transport-error arm, which no other test reaches.
-    let port = TcpListener::bind("127.0.0.1:0")
-        .map(|l| l.local_addr().unwrap().port())
-        .unwrap(); // listener dropped, so the port is closed
-    let (out, elapsed) = run_bx(port, &["--timeout", "5"]);
+    // Nothing is listening: the generic transport-error arm, which no other test reaches. Port 1,
+    // not a freed ephemeral one a parallel test's server can take.
+    let (out, elapsed) = run_bx(1, &["--timeout", "5"]);
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(5), "{stderr}");
@@ -821,7 +810,7 @@ fn run_stdin(head: &str, reply: &str, stdin: &str, args: &[&str]) -> (Output, St
         .unwrap()
         .write_all(stdin.as_bytes())
         .unwrap();
-    let out = child.wait_with_output().unwrap();
+    let out = finish(child);
     let sent = sent.recv_timeout(PATIENCE).unwrap_or_default();
     (out, sent)
 }
@@ -914,7 +903,7 @@ fn closed_reader_stops_the_stream() {
     reader.read_line(&mut first).unwrap();
     drop(reader);
 
-    let out = child.wait_with_output().unwrap();
+    let out = finish(child);
     let elapsed = started.elapsed();
 
     assert_eq!(first.trim(), "{\"n\":0}");
@@ -945,7 +934,7 @@ fn a_reader_that_leaves_before_the_first_record_is_still_a_clean_stop() {
         .unwrap();
     drop(child.stdout.take());
 
-    let out = child.wait_with_output().unwrap();
+    let out = finish(child);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
@@ -967,7 +956,7 @@ fn a_closed_reader_on_the_blocking_path_is_also_a_clean_stop() {
         .unwrap();
     drop(child.stdout.take());
 
-    let out = child.wait_with_output().unwrap();
+    let out = finish(child);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
@@ -1003,8 +992,7 @@ fn output_that_cannot_be_written_is_never_reported_as_success() {
             .args(["--timeout", "5"])
             .stdout(Stdio::from(full))
             .stderr(Stdio::piped())
-            .output()
-            .unwrap();
+            .bounded_output();
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{argv:?}: {stderr}");

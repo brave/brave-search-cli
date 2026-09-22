@@ -5,6 +5,8 @@ ARG TARGET=aarch64-pc-windows-gnullvm
 FROM ghcr.io/rust-cross/cargo-zigbuild:latest@sha256:b8364c2c60cdcc9b95c402d17654bff517410926a35678bd89dd924b8158d6ae AS builder
 ARG TARGET
 
+# The MSRV, pinned in every release Dockerfile; the image's own Rust trails it.
+RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
 RUN rustup target add "$TARGET"
 
 WORKDIR /src

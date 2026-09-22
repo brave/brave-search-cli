@@ -322,6 +322,7 @@ Only loopback addresses are allowed for `http://` URLs — non-loopback IPs and 
 | `spellcheck` | Spell-check a query | `.results[0].query` |
 | `pois` | POI details by ID | (use IDs from `places`) |
 | `descriptions` | AI-generated POI descriptions | `.results[].description` |
+| `council` | **Multi-model review** — several frontier models research one subject in parallel ([details](#council)) | `.quorum.delivered`, `.members[]` → `{model, status, action, file}` |
 | `config` | Manage configuration | `set-key`, `show-key`, `show`, `path` |
 
 ## Usage Examples
@@ -419,6 +420,143 @@ echo '{"messages":[{"role":"user","content":"review this code for security issue
 cat request.json | bx answers -
 ```
 
+## Council
+
+`bx council` sends one plan, diff or question to several frontier models at once. Each has
+live search over Brave's independent index and none sees another's reply, so you get
+independent, sourced critiques instead of one model's recall. Nothing is lost quietly: a member
+that fails is named with its reason and whether a retry would help, every reply you paid for is
+written to disk, and `manifest.json` tells an agent what to do next.
+
+Use it on a change you are about to ship or run unattended, a plan worth attacking before it
+is built, or a question where one model's answer is not evidence.
+
+### Quick Start
+
+```bash
+bx council doctor                  # keys, panels, pricing and file paths; free, no network
+bx council @design.md --dry-run    # the plan and what your past runs cost; spends nothing
+bx council @design.md              # run it: a few dollars and up to 15 minutes by default
+```
+
+`OPENROUTER_API_KEY` reaches every model. The default panel also calls Anthropic directly, so
+it needs `ANTHROPIC_API_KEY` unless you pass `--via openrouter`. Members search with your Brave
+key (`bx config set-key`); `--tools none` runs without search and without that key.
+`bx council set-key` saves inference keys to `council.json`.
+
+A run blocks until its last member finishes, which is longer than most agent shells wait.
+Name it, background it, and poll; `--out` takes a new or empty directory:
+
+```bash
+bx council @design.md --out review-1 >review-1.json 2>review-1.log &
+bx council status review-1         # phase, done, total
+git diff main | bx council - --task code-review   # review a change from stdin
+```
+
+### Writing the Subject
+
+Pass a file (`@design.md`), stdin (`-`), or a quoted sentence; anything longer than a line
+belongs in a file or on stdin (1 MiB limit). Each member is billed for the subject on every
+round it takes, so its size drives the bill: send what the question needs, not the
+repository. The models see only that text — search is their one tool, so they cannot open
+your files or run your tests.
+
+One scoped question per council, in this order: what this is and what it costs to be wrong;
+the material; what is out of scope or already decided; then a numbered list of asks. Split a
+large review across several councils rather than sending one giant paste.
+
+### Reading the Results
+
+The run directory is named on stderr as the run starts. Start at `index.md`, where a failed
+member is struck through with its reason. Beside it:
+
+| File | Holds |
+|------|-------|
+| `NN-<model>.md` | One member's reply; a rejected one too, headed `REJECTED` with the reason |
+| `NN-<model>.md.partial` | Paid text that was never published, kept rather than discarded |
+| `manifest.json` | The run as JSON, also printed on stdout |
+| `sources.json` | Every URL each member was shown |
+
+In the manifest, read `quorum.delivered`, `members[].action` (`retry` or `none`) and `hint`,
+which gives the `-m` that re-runs only the members worth retrying. Exit 0 means at least
+`--min-quorum` members delivered, and the default is 1, so check `quorum.delivered` or raise
+`--min-quorum`.
+
+Delivered means a reply passed the delivery gate, not that it is right. Treat each finding like
+a stranger's bug report and reproduce it before you act; two members agreeing is a filter, not
+proof. After fixing, run `--task second-pass` over the fixes and the first round's findings.
+`bx council findings [run]` prints a run as JSON split on its headings; `bx council ls` lists
+the 20 newest runs.
+
+### Cost and Time
+
+- `--dry-run` prints the plan and, once a panel has three past runs, `observed`: what those
+  runs were charged for inference. Size `--max-usd` above its max. `worst_usd` beside it covers
+  only members priced in advance; OpenRouter members' inference is not in it.
+- `--max-usd` caps reported spend, Brave lookups included. It is checked between rounds, so
+  each running member can overshoot by one round, and a member it stops keeps what it wrote.
+  It refuses to start while a direct member has no rate; add one under `rates` in
+  `council.json`. `bx council doctor` shows how each member is priced.
+- `--max-seconds` is each member's clock: 900 by default, 2400 for `audit`. Members run in
+  parallel, so it bounds the run too unless you lower `--concurrency`. Raise it when you retry
+  a member it stopped.
+- `-m @fast` is a cheaper five-model panel that needs only `OPENROUTER_API_KEY` for inference.
+- `--max-searches` (default 15 per member) bounds Brave lookups, each a billed request.
+- `--effort`: lower it when a member spends its output on hidden reasoning; the run names this
+  flag when that happens.
+
+### Tasks and `council.json`
+
+`--task` picks the prompt by its exact name. Reviews, in lettered sections ending in a
+verdict: `design-review` (default), `code-review`, `audit` (every line, on a longer clock) and
+`second-pass` (grades your fixes). Answers built from sources: `decide`, `ask`, `fact-check`.
+
+Any Markdown file in the tasks directory is a task named after the file, and one named like a
+built-in replaces it. Its frontmatter can pin the panel, effort, clock and search budget, so a
+task is a saved review rather than a prompt. `{doc}` marks where the subject goes; without it
+the subject is appended. `bx council tasks` names the directory and every frontmatter key:
+
+```markdown
+---
+description: rank detection signals by discrimination x durability
+panel: opus,astra
+max_searches: 25
+max_seconds: 2400
+---
+You are a threat-intelligence analyst. Rank the signals in {doc} by ...
+```
+
+`council.json` holds your own panels (`-m @name`; one named `default` replaces `@default`),
+aliases, `default_task`, `max_usd`, `rates` for direct members, `direct` (which vendors bypass
+OpenRouter), and `providers`, which pins a model to named OpenRouter endpoints. `bx council
+doctor` prints its path; `--config` does not move it.
+
+```json
+{
+  "panels": { "mine": ["opus", "kimi", "z-ai/glm-5.3"] },
+  "default_task": "code-review",
+  "max_usd": 10
+}
+```
+
+### Privacy and Retention
+
+Your subject goes to every model provider on the panel. Members write search queries from it
+and send them to Brave, and what Brave returns goes back to the provider that asked.
+`--dry-run` states this egress before you spend. Send nothing those parties should not see.
+
+Zero data retention is requested by default; `"zdr": false` in `council.json` stops requesting
+it. What a transport can enforce differs, so `bx council doctor` prints it per transport and
+each manifest records what applied under `members[].retention`. While it is on, an OpenRouter
+model with no zero-retention endpoint is refused before the run starts.
+
+Runs stay in the state directory (`doctor` prints it) until `bx council prune` removes those
+older than 30 days that finished or were abandoned before any reply; `--dry-run` lists them
+first, and a live run is skipped. `--out` directories and `history.jsonl` (one metadata line
+per member, no subject text) are never pruned. `--trace` also keeps each member's whole conversation. On Linux and macOS files are
+`0600`, in directories bx creates at `0700`; on Windows no ACL is set, so restrict the
+directory yourself.
+
 ## Exit Codes
 
 | Code | Meaning | Agent action |
@@ -426,10 +564,20 @@ cat request.json | bx answers -
 | 0 | Success | Process results |
 | 1 | The request was made; the result is unusable | Fix query/parameters |
 | 2 | Usage error — nothing was sent | Fix the CLI arguments, config, or input |
-| 3 | Auth/permission error (401/403) | Check API key or plan: `bx config show-key` |
+| 3 | Auth/permission error (401/403) | Check API key or plan: `bx config show-key`; `council`: `bx council doctor` |
 | 4 | Rate limited (429) | Retry after delay |
 | 5 | Server/network error | Retry with backoff |
+| 6 | `council`: quorum missed for any other reason, a network outage included | Read `members[].action`; retry those marked `retry` |
+| 7 | `council`: quorum missed, and every failure was `--max-usd` | Raise the cap (`cost.max_usd`, `hint`) and re-run |
+| 8 | `council`: out of credit (402) | Top up the provider account |
 | 127 | npm launcher could not start bx | Reinstall, or check platform support |
+
+`council` exits 0 once `--min-quorum` members deliver (default 1), whatever happened to the
+rest, so a run the cap cut short can still exit 0. When quorum is missed it exits 3, 4, 5 or 8
+if every failed member met the same kind of provider error, 7 if every failure was the cap,
+and 6 otherwise.
+Its free pre-flight checks can exit 3 (key rejected) or 8 (balance exhausted) before anything
+is sent.
 
 ## Error Handling
 

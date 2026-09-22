@@ -2,7 +2,7 @@
 name = "brave-search-cli"
 version = "1.7.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98.1"
 description = "A token-efficient CLI for the Brave Search API, built for AI agents and LLMs"
 license = "MPL-2.0"
 repository = "https://github.com/brave/brave-search-cli"
@@ -19,11 +19,19 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive", "env"] }
-ureq = { version = "3.1.4", default-features = false, features = ["rustls"] }
-serde_json = "1.0.149"
+# Exact: 3.4.1 (#1194) makes `timeout_recv_body` a total budget, which caps streamed answers.
+ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
+serde_json = { version = "1.0.149", features = ["raw_value"] }
 dirs = "6.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
 urlencoding = "2.1.3"
+# `sha256_short`; already in the tree via `rustls`.
+ring = { version = "0.17.14", default-features = false }
+
+# `O_NOFOLLOW` for the append-only logs and `kill(pid, 0)` for a run lock's writer. Already in
+# the tree; no new crate.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.182"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
