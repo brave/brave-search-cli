@@ -6,6 +6,8 @@ ARG TARGET=aarch64-apple-darwin
 FROM ghcr.io/rust-cross/cargo-zigbuild:latest@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c AS builder
 ARG TARGET
 
+# The MSRV, pinned in every release Dockerfile; the image's own Rust trails it.
+RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
 RUN rustup target add "$TARGET"
 
 WORKDIR /src

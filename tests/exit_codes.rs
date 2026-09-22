@@ -1,10 +1,13 @@
 //! The exit-code contract, pinned end to end.
 //!
 //! An agent branches on these numbers, so the line between them is part of the interface:
-//! 2 means bx could not act on what it was given and never contacted the API, so retrying
+//! 2 means bx could not act on what it was given and sent no paid request, so retrying
 //! the same command cannot help. Every case below must therefore fail without a network.
 
-use std::process::{Command, Output};
+use std::process::Output;
+
+mod common;
+use common::{Bounded, bx_in, finish};
 
 /// Runs `bx` fully isolated: a throwaway config, no inherited key, and a base URL that
 /// refuses connections, so a case that stopped failing early would exit 5 rather than
@@ -17,17 +20,14 @@ fn bx(args: &[&str]) -> Output {
 fn bx_raw(args: &[&str], extra: &[&str]) -> Output {
     let cfg = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(cfg.path(), "{}").unwrap();
-    Command::new(env!("CARGO_BIN_EXE_bx"))
+    let home = tempfile::tempdir().unwrap();
+    bx_in(home.path())
         .args(args)
         .args(extra)
         .arg("--config")
         .arg(cfg.path())
         .env("BRAVE_SEARCH_API_KEY", "TEST")
-        .env_remove("BRAVE_API_KEY")
-        .env_remove("BRAVE_SEARCH_BASE_URL")
-        .env("NO_PROXY", "*")
-        .output()
-        .unwrap()
+        .bounded_output()
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn a_missing_required_id_is_a_usage_error() {
 fn an_unusable_config_is_a_usage_error() {
     // A config value is an input like any other: `timeout: 0` is unusable, and so is a
     // file that does not parse. Both used to exit 1, which reads as "the API said no".
-    // No `--base-url` here: a CLI value would override the very config field under test.
+    // No base URL flag or variable here: either would override the config field under test.
     // The rejected host is RFC 2606 reserved, so a regression cannot reach a real service.
     for contents in [
         "{not json",
@@ -92,16 +92,14 @@ fn an_unusable_config_is_a_usage_error() {
     ] {
         let cfg = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(cfg.path(), contents).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_bx"))
+        let home = tempfile::tempdir().unwrap();
+        let out = bx_in(home.path())
             .args(["web", "q"])
             .arg("--config")
             .arg(cfg.path())
             .env("BRAVE_SEARCH_API_KEY", "TEST")
-            .env_remove("BRAVE_API_KEY")
             .env_remove("BRAVE_SEARCH_BASE_URL")
-            .env("NO_PROXY", "*")
-            .output()
-            .unwrap();
+            .bounded_output();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{contents}: {stderr}");
     }
@@ -114,21 +112,19 @@ fn unparseable_stdin_is_a_usage_error() {
 
     let cfg = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(cfg.path(), "{}").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_bx"))
+    let home = tempfile::tempdir().unwrap();
+    let mut child = bx_in(home.path())
         .args(["answers", "-", "--base-url", "http://127.0.0.1:1"])
         .arg("--config")
         .arg(cfg.path())
         .env("BRAVE_SEARCH_API_KEY", "TEST")
-        .env_remove("BRAVE_API_KEY")
-        .env_remove("BRAVE_SEARCH_BASE_URL")
-        .env("NO_PROXY", "*")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     child.stdin.take().unwrap().write_all(b"{not json").unwrap();
-    let out = child.wait_with_output().unwrap();
+    let out = finish(child);
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
@@ -156,14 +152,12 @@ fn config_subcommands_reject_an_unusable_file_the_same_way() {
     // disagree about whether that was the API's answer or the user's mistake.
     let cfg = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(cfg.path(), "{not json").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_bx"))
+    let home = tempfile::tempdir().unwrap();
+    let out = bx_in(home.path())
         .args(["config", "show"])
         .arg("--config")
         .arg(cfg.path())
-        .env_remove("BRAVE_SEARCH_API_KEY")
-        .env_remove("BRAVE_API_KEY")
-        .output()
-        .unwrap();
+        .bounded_output();
     assert_eq!(
         out.status.code(),
         Some(2),
