@@ -565,6 +565,10 @@ fn parse_timeout_negative_rejected() {
 #[test]
 fn load_config_override_permission_denied_returns_err() {
     use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return; // root reads through any mode
+    }
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("config.json");
     fs::write(&p, r#"{"timeout":10}"#).unwrap();

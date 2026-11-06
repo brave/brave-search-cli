@@ -644,7 +644,7 @@ impl Member<'_> {
         if usd.is_finite() {
             // Saturating: a wrapping add would reopen the cap after an absurd charge.
             self.spent
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                     |cur| Some(cur.saturating_add(micro_usd(usd))),

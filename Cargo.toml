@@ -2,7 +2,7 @@
 name = "brave-search-cli"
 version = "1.7.0"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 description = "A token-efficient CLI for the Brave Search API, built for AI agents and LLMs"
 license = "MPL-2.0"
 repository = "https://github.com/brave/brave-search-cli"

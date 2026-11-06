@@ -987,8 +987,8 @@ fn one_member(idx: usize, entry: &Route, cx: &Ctx, tx: mpsc::SyncSender<Event>) 
     };
     let mut m = Member {
         model: slug.clone(),
-        served_model: r.served_model.as_deref().map(&label),
-        provider: r.provider.as_deref().map(&label),
+        served_model: r.served_model.as_deref().map(label),
+        provider: r.provider.as_deref().map(label),
         transport: w.name,
         outcome,
         text: r.text,

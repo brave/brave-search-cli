@@ -3116,9 +3116,14 @@ fn the_manifest_names_every_limit_after_the_flag_that_sets_it() {
 /// A subset, not equality: a dropped key breaks a consumer, an added one does not.
 #[test]
 fn the_manifest_keeps_publishing_every_key_a_consumer_was_promised() {
-    let ms = vec![member(Outcome::Delivered {
+    // `file` is published only when the reply exists on disk.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut m0 = member(Outcome::Delivered {
         partial_grounding: false,
-    })];
+    });
+    m0.path = tmp.path().join("00-m.md");
+    std::fs::write(&m0.path, "reply").unwrap();
+    let ms = vec![m0];
     let m = output::manifest(&run_info(), &ms, 10, 16, 540, 400);
     for key in [
         "schema",
