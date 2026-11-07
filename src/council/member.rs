@@ -670,10 +670,12 @@ pub(super) fn lost_chain(msg: &str) -> bool {
 /// one a server asked for. The clock is entropy enough to decorrelate threads.
 pub(super) fn backoff(attempt: u32) -> Duration {
     let ceiling = (BASE_MS << attempt.min(5)).min(BACKOFF_CAP_MS);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos() as u64);
-    Duration::from_millis((BASE_MS + nanos % ceiling).min(BACKOFF_CAP_MS))
+    // Fresh SipHash keys per call: the clock is microsecond-grained on macOS, so `% ceiling` was 0.
+    use std::hash::{BuildHasher, Hasher};
+    let r = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    Duration::from_millis((BASE_MS + r % ceiling).min(BACKOFF_CAP_MS))
 }
 
 /// Cheap when tracing is off: the payload closure runs only when somebody is listening.

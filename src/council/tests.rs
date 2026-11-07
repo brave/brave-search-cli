@@ -4002,7 +4002,9 @@ fn an_online_variant_is_refused() {
 #[test]
 fn a_run_of_parent_components_cannot_pop_past_the_root_into_a_relative_path() {
     let got = resolve::check_out(std::path::Path::new("/../../../tmp/bx-council-root")).unwrap();
-    assert_eq!(got, std::path::PathBuf::from("/tmp/bx-council-root"));
+    // Compared resolved: macOS's `/tmp` is a link to `/private/tmp`.
+    let want = resolve::check_out(std::path::Path::new("/tmp/bx-council-root")).unwrap();
+    assert_eq!(got, want);
     assert!(got.is_absolute());
 }
 

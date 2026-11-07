@@ -521,8 +521,8 @@ fn a_manifest_opening_with_the_raw_value_token_reads_like_any_other() {
     assert_eq!(run_state(tmp.path()).phase, "ok");
 }
 
-/// A non-UTF-8 entry still on disk is not reported destroyed.
-#[cfg(unix)]
+/// A non-UTF-8 entry still on disk is not reported destroyed. APFS refuses such names.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn a_name_that_is_not_utf8_is_not_reported_as_destroyed() {
     use std::os::unix::ffi::OsStrExt;
