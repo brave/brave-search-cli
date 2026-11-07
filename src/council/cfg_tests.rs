@@ -245,9 +245,12 @@ fn an_alias_chain_longer_than_nine_hops_resolves_to_the_model() {
 #[test]
 fn the_loopback_carve_out_resolves_and_pins_exactly_as_the_brave_path_does() {
     let w = &super::super::wire::OPENROUTER;
-    assert_eq!(
-        check_base_url(w, "http://localhost:8080").unwrap(),
-        "http://127.0.0.1:8080"
+    // Any loopback literal: which one depends on the host's resolver order.
+    let localhost = check_base_url(w, "http://localhost:8080").unwrap();
+    let pinned: std::net::SocketAddr = localhost.strip_prefix("http://").unwrap().parse().unwrap();
+    assert!(
+        pinned.ip().is_loopback() && pinned.port() == 8080,
+        "{localhost}"
     );
     // A literal is already pinned, v4 and v6.
     for ok in ["http://127.0.0.1:8080", "http://[::1]:8080"] {
