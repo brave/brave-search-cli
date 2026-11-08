@@ -52,7 +52,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
         if: runner.os != 'Linux' # check lints Linux
 
-      - run: cargo test
+      - run: cargo test --no-fail-fast
 
   npm-launcher:
     runs-on: ubuntu-latest

@@ -261,17 +261,15 @@ pub fn is_run_id(name: &str) -> bool {
 /// `<YYYYmmdd-HHMMSS>-<6 hex>`. The suffix makes a same-second collision unlikely; the caller's
 /// retry on `AlreadyExists` makes it impossible.
 pub fn run_id() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let (y, mo, d, h, mi, s) = parts(now / 1_000_000_000);
-    // splitmix64 finalizer over the low nanosecond bits, the only entropy here.
-    let mut x = now ^ (u64::from(std::process::id()) << 32);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    let (y, mo, d, h, mi, s) = parts(secs_now());
+    // Fresh SipHash keys per call: macOS's clock is microsecond-grained, so it cannot be the entropy.
+    use std::hash::{BuildHasher, Hasher};
+    let x = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
     format!(
         "{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:06x}",
-        (x ^ (x >> 31)) & 0xff_ffff
+        x & 0xff_ffff
     )
 }
 

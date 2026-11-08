@@ -19,8 +19,53 @@ use common::{Bounded, bx_in, bx_root, finish};
 /// queue of canned replies would mix their rounds.
 type Handler = Arc<dyn Fn(&str, &str) -> (u16, String) + Send + Sync>;
 
-/// Serves on a detached thread for the life of the process. Returns the port and the recorded
-/// request bodies.
+/// A mock's listener, closed when the test that bound it ends: kept for the process, ~250 of
+/// them exhaust macOS's default of 256 descriptors.
+struct Listener {
+    inner: TcpListener,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Wakes the accept loop so it sees `stop` and drops the listener.
+struct Stop(Arc<std::sync::atomic::AtomicBool>, std::net::SocketAddr);
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.1);
+    }
+}
+
+thread_local! {
+    /// libtest gives each test its own thread, so these drop as the test ends.
+    static STOPS: std::cell::RefCell<Vec<Stop>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn bind() -> Listener {
+    let inner = TcpListener::bind("127.0.0.1:0").unwrap();
+    let stop = Arc::default();
+    let addr = inner.local_addr().unwrap();
+    STOPS.with(|s| s.borrow_mut().push(Stop(Arc::clone(&stop), addr)));
+    Listener { inner, stop }
+}
+
+impl Listener {
+    fn incoming(&self) -> impl Iterator<Item = std::io::Result<std::net::TcpStream>> + '_ {
+        self.inner
+            .incoming()
+            .take_while(|_| !self.stop.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+impl std::ops::Deref for Listener {
+    type Target = TcpListener;
+    fn deref(&self) -> &TcpListener {
+        &self.inner
+    }
+}
+
+/// Serves on a detached thread until the test ends. Returns the port and the recorded request
+/// bodies.
 fn serve(handler: Handler) -> (u16, Recorded) {
     let (port, bodies, _) = serve_with_heads(handler);
     (port, bodies)
@@ -30,7 +75,7 @@ type Recorded = Arc<Mutex<Vec<String>>>;
 
 /// `serve`, also recording each request's request and header lines.
 fn serve_with_heads(handler: Handler) -> (u16, Recorded, Recorded) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = bind();
     let port = listener.local_addr().unwrap().port();
     let (seen, heads) = (Recorded::default(), Recorded::default());
     let (recorded, headed) = (Arc::clone(&seen), Arc::clone(&heads));
@@ -284,7 +329,7 @@ fn drip_server_unless(
     head_delay: std::time::Duration,
     answer: impl Fn(&str, &str) -> Option<(u16, String)> + Send + Sync + 'static,
 ) -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = bind();
     let port = listener.local_addr().unwrap().port();
     let answer = Arc::new(answer);
     thread::spawn(move || {
@@ -1940,7 +1985,7 @@ fn an_exhausted_member_reports_the_retries_it_actually_made() {
 /// Answers the free probes, then cuts every inference response off mid-body: 50,000 bytes
 /// promised, 20 sent. Returns the port and the count of inference requests.
 fn cut_off_server() -> (u16, Arc<Mutex<usize>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = bind();
     let port = listener.local_addr().unwrap().port();
     let requests = Arc::new(Mutex::new(0usize));
     let counter = Arc::clone(&requests);
@@ -4043,7 +4088,7 @@ fn set_key_stores_a_credential_privately_and_keeps_the_other_slots() {
 
 #[test]
 fn a_retry_after_longer_than_the_time_left_ends_the_member_now_rather_than_sleeping() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = bind();
     let port = listener.local_addr().unwrap().port();
     let hits = Arc::new(Mutex::new(0usize));
     let seen = Arc::clone(&hits);
@@ -4238,7 +4283,7 @@ fn a_body_that_arrives_in_many_chunks_is_read_whole() {
     })
     .to_string();
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = bind();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         for sock in listener.incoming().flatten() {
@@ -4340,7 +4385,7 @@ fn a_provider_redirect_is_not_followed_so_the_key_never_reaches_its_location() {
     let thief = TcpListener::bind("127.0.0.1:0").unwrap();
     let thief_port = thief.local_addr().unwrap().port();
     thief.set_nonblocking(true).unwrap();
-    let provider = TcpListener::bind("127.0.0.1:0").unwrap();
+    let provider = bind();
     let port = provider.local_addr().unwrap().port();
     thread::spawn(move || {
         for mut sock in provider.incoming().flatten() {
@@ -7348,16 +7393,14 @@ fn every_free_command_has_a_human_form_and_it_says_the_same_thing() {
         status.contains('\u{2713}'),
         "and finished, not running: {status}"
     );
-    // Names the run it read: without `--out`, "the newest" can change mid-poll.
-    assert!(status.contains("/bx/council/2026"), "{status}");
     let json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&free(&["status"]).stdout)).unwrap();
     assert_eq!(json["phase"], "ok", "{json}");
     assert_eq!(json["done"], 2);
-    assert!(
-        json["run"].as_str().is_some_and(|r| r.starts_with("2026")),
-        "{json}"
-    );
+    let id = json["run"].as_str().unwrap_or_default().to_string();
+    assert_eq!(id.len(), 22, "YYYYmmdd-HHMMSS-xxxxxx: {json}");
+    // Names the run it read: without `--out`, "the newest" can change mid-poll.
+    assert!(status.contains(&format!("/bx/council/{id}")), "{status}");
     // `status` and `ls` agree about one run.
     let listed: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&free(&["ls"]).stdout)).unwrap();
@@ -7379,7 +7422,7 @@ fn every_free_command_has_a_human_form_and_it_says_the_same_thing() {
     }
     let scored = text(&["useful-yes"]);
     assert!(scored.starts_with("useful "), "{scored}");
-    assert!(scored.contains("/bx/council/2026"), "{scored}");
+    assert!(scored.contains(&format!("/bx/council/{id}")), "{scored}");
     let after: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&free(&["ls"]).stdout)).unwrap();
     assert_eq!(after["runs"][0]["useful"], true, "{after}");
@@ -7540,7 +7583,7 @@ fn an_all_direct_panel_sends_no_credit_probe() {
 #[test]
 fn preflight_requests_do_not_follow_redirects() {
     let (target, seen) = serve(mock(|_| reply(&prose())));
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = bind();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         for mut sock in listener.incoming().flatten() {
@@ -11417,7 +11460,8 @@ fn prune_judges_paid_output_by_shape_not_by_the_alphabet_findings_displays() {
     // The non-UTF-8 name is invisible to `member_files`, which goes through `to_str`.
     let spaced = aged("20260101-120000-aaaaaa", Some(o("00-my file.md")));
     let accented = aged("20260101-120000-bbbbbb", Some(o("00-café.md")));
-    #[cfg(unix)]
+    // APFS refuses the name.
+    #[cfg(not(target_os = "macos"))]
     let raw = {
         use std::os::unix::ffi::OsStrExt;
         aged(
@@ -11444,7 +11488,7 @@ fn prune_judges_paid_output_by_shape_not_by_the_alphabet_findings_displays() {
     ] {
         assert!(run.exists(), "a run whose reply has {what} was deleted");
     }
-    #[cfg(unix)]
+    #[cfg(not(target_os = "macos"))]
     assert!(raw.exists(), "a run whose reply is not UTF-8 was deleted");
     assert!(
         !empty.exists(),
@@ -12019,7 +12063,6 @@ fn a_discarded_draft_outranks_a_reasoning_only_one_through_the_loop() {
 /// One counter-example per condition, since on a tidy fixture they mask each other.
 #[test]
 fn member_files_selects_on_every_part_of_the_name() {
-    use std::os::unix::ffi::OsStrExt;
     let dir = TempDir::new().unwrap();
     let run = dir
         .path()
@@ -12049,12 +12092,17 @@ fn member_files_selects_on_every_part_of_the_name() {
             std::fs::write(&p, "## A. X\nx\n").unwrap();
         }
     }
-    // Not UTF-8: dropped by `to_str`, while the good names prove the listing itself worked.
-    std::fs::write(
-        run.join(std::ffi::OsStr::from_bytes(b"14-\xff\xfe.md")),
-        "## A. X\nx\n",
-    )
-    .unwrap();
+    // Not UTF-8: dropped by `to_str`, while the good names prove the listing itself worked. APFS
+    // refuses the name.
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::fs::write(
+            run.join(std::ffi::OsStr::from_bytes(b"14-\xff\xfe.md")),
+            "## A. X\nx\n",
+        )
+        .unwrap();
+    }
     let out = bx_in(dir.path())
         .args(["council", "findings", "20260101-120000-aaaaaa"])
         .env("BRAVE_SEARCH_API_KEY", "BSAtestkey000")

@@ -2052,11 +2052,9 @@ fn a_retry_after_at_the_integer_ceiling_does_not_panic() {
 
 #[test]
 fn backoff_decorrelates_within_a_single_millisecond() {
-    let start = std::time::Instant::now();
-    let mut seen = std::collections::HashSet::new();
-    while start.elapsed() < std::time::Duration::from_micros(900) {
-        seen.insert(member::backoff(1).as_millis());
-    }
+    // Counted, not timed: a preempted thread would get one sample. Back-to-back is one millisecond.
+    let seen: std::collections::HashSet<_> =
+        (0..32).map(|_| member::backoff(1).as_millis()).collect();
     assert!(
         seen.len() > 1,
         "a same-millisecond burst produced one delay: {seen:?}"
@@ -2673,7 +2671,12 @@ fn out_paths_are_normalised_before_they_are_judged_and_the_judged_path_is_return
     }
 
     let out = resolve::check_out(&home.join("a/../bx-council-test")).unwrap();
-    assert_eq!(out, home.join("bx-council-test"), "the `..` must be gone");
+    // Canonical: Windows spells it `\\?\C:\...`, a linked home its target.
+    assert_eq!(
+        out,
+        home.canonicalize().unwrap().join("bx-council-test"),
+        "the `..` must be gone"
+    );
 
     // A symlinked ancestor must not carry the run past the checks.
     #[cfg(unix)]
@@ -3295,7 +3298,7 @@ fn the_hint_names_the_index_an_agent_should_read_first() {
         .as_str()
         .unwrap()
         .to_string();
-    let index = r.dir.join("index.md").display().to_string();
+    let index = r.index_file.as_ref().unwrap().display().to_string();
     assert!(hint.contains(&index), "hint must name {index}: {hint}");
     // The retry clause stays last: what happened, where to look, what to do.
     assert!(
