@@ -5554,13 +5554,32 @@ fn a_directory_we_did_not_create_is_never_tightened() {
 #[test]
 #[cfg(unix)]
 fn an_out_leaf_that_became_a_link_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let victim = tmp.path().join("victim");
+    let dir = tempfile::tempdir().unwrap();
+    // Canonical, as `check_out` returns it: macOS's `/var` is itself a link.
+    let tmp = dir.path().canonicalize().unwrap();
+    let victim = tmp.join("victim");
     std::fs::create_dir(&victim).unwrap();
-    let planted = tmp.path().join("out");
+    let planted = tmp.join("out");
     std::os::unix::fs::symlink(&victim, &planted).unwrap();
     assert!(super::run::out_dir(&planted).is_err());
-    super::run::out_dir(&tmp.path().join("ours")).unwrap();
+    super::run::out_dir(&tmp.join("ours")).unwrap();
+}
+
+/// A link planted mid-path after `check_out` (`mkdir` follows it) is refused before anything is
+/// created through it.
+#[test]
+#[cfg(unix)]
+fn a_link_planted_mid_path_is_refused_before_anything_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().canonicalize().unwrap();
+    let victim = tmp.join("victim");
+    std::fs::create_dir(&victim).unwrap();
+    std::os::unix::fs::symlink(&victim, tmp.join("mid")).unwrap();
+    assert!(super::run::out_dir(&tmp.join("mid").join("leaf")).is_err());
+    assert!(
+        !victim.join("leaf").exists(),
+        "created inside the link's target"
+    );
 }
 
 // ── Parser and renderer edge cases ───────────────────────────────────

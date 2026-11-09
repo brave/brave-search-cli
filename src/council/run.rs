@@ -809,15 +809,27 @@ pub(super) fn make_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-/// The `--out` leaf, created if absent, then re-checked: a link planted since `check_out` would
-/// carry every write through it.
+/// The `--out` leaf, created if absent. `check_out` returned it canonical, so a link anywhere in
+/// it was planted since and would carry every write through it: checked before creating
+/// anything, and again after.
 pub(super) fn out_dir(real: &std::path::Path) -> Result<(), String> {
-    make_private_dir(real).map_err(|e| format!("{}: {e}", real.display()))?;
-    if !std::fs::symlink_metadata(real).is_ok_and(|m| m.is_dir()) {
-        return Err(format!(
-            "--out {} is no longer a directory; pass the directory it names",
+    let moved = || {
+        format!(
+            "--out {} now passes through a link or is no longer a directory; pass the directory \
+             it names",
             real.display()
-        ));
+        )
+    };
+    let linked = || {
+        real.ancestors()
+            .any(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
+    };
+    if linked() {
+        return Err(moved());
+    }
+    make_private_dir(real).map_err(|e| format!("{}: {e}", real.display()))?;
+    if linked() || !std::fs::symlink_metadata(real).is_ok_and(|m| m.is_dir()) {
+        return Err(moved());
     }
     Ok(())
 }
