@@ -84,12 +84,12 @@ clean:
 	rm -rf dist
 
 # One container per target, so `make -j dist-all` jobs cannot clobber each other. The `.sha256`
-# is what publish-npm.yml and the install scripts verify.
+# is what publish-npm.yml and the install scripts verify; macOS before 15 has only `shasum`.
 define docker-extract
 	mkdir -p dist
 	docker rm -f tmp-$(BINARY)-$(2) 2>/dev/null || true
 	docker create --name tmp-$(BINARY)-$(2) $(1) /dev/null
 	docker cp tmp-$(BINARY)-$(2):/$(BINARY)$(3) dist/$(BINARY)-$(VERSION)-$(2)$(3)
 	docker rm tmp-$(BINARY)-$(2)
-	cd dist && sha256sum $(BINARY)-$(VERSION)-$(2)$(3) > $(BINARY)-$(VERSION)-$(2)$(3).sha256
+	cd dist && f=$(BINARY)-$(VERSION)-$(2)$(3) && if command -v sha256sum >/dev/null; then sha256sum "$$f"; else shasum -a 256 "$$f"; fi > "$$f.sha256" || { rm -f "$$f.sha256"; exit 1; }
 endef

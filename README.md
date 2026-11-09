@@ -605,7 +605,7 @@ cargo build --release
 
 ### Static binaries via Docker
 
-Requires Docker, GNU Make, and a POSIX shell (`sh`/`bash`). Produces fully static, cross-compiled binaries.
+Requires Docker, GNU Make, a POSIX shell (`sh`/`bash`), and `sha256sum` or `shasum`. Produces fully static, cross-compiled binaries.
 
 On Windows, run these targets from Git Bash or WSL. Running `make` from native `cmd`/PowerShell can fail because the `Makefile` uses POSIX utilities (`grep`, `sed`, shell redirection).
 
