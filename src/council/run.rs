@@ -784,32 +784,18 @@ pub(super) fn lock(dir: &std::path::Path) -> std::io::Result<OutLock> {
     Ok(OutLock(path, None))
 }
 
-/// Whether no run holds the lock at `path`; one that cannot be judged is held.
-pub(super) fn orphaned(path: &std::path::Path) -> bool {
-    let mut o = std::fs::OpenOptions::new();
-    // Write: an exclusive lock needs it on NFS.
-    o.read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.custom_flags(libc::O_NOFOLLOW);
-    }
-    o.open(path)
-        .is_ok_and(|f| f.metadata().is_ok_and(|m| m.is_file()) && f.try_lock().is_ok())
-}
-
 fn out_lock(dir: &std::path::Path) -> Result<OutLock, String> {
     let path = dir.join(LOCK);
     match lock(dir) {
-        // Held for the whole run: the kernel drops it with the process, however that died. Not
-        // blocking: the file is new, and a filesystem without locks still runs.
+        // Held for the whole run, then said so: `prune` reads an unheld lock that says it as a
+        // dead run. Never waits on contention; without the lock, the pid still decides.
         Ok(mut l) => {
             l.1 = std::fs::OpenOptions::new()
                 .read(true)
-                .write(true)
+                .append(true)
                 .open(&path)
                 .ok()
-                .filter(|f| f.try_lock().is_ok());
+                .filter(|mut f| f.try_lock().is_ok() && f.write_all(b"locked\n").is_ok());
             Ok(l)
         }
         // `create_new` is the authority: it catches a run that took the lock after `plan` looked.

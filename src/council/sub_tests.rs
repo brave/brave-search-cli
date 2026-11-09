@@ -623,3 +623,28 @@ fn every_wire_in_the_table_has_its_own_key_slot() {
         assert_eq!(key_slot(&mut c, w.name).unwrap().as_deref(), Some(w.name));
     }
 }
+
+/// A held lock is a live run, and an unheld one its writer held a dead one, whatever pid it names:
+/// ours is always live. Runs everywhere, so Windows' `LockFileEx` is covered too.
+#[test]
+fn a_lock_is_judged_by_its_holder_before_its_pid() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lock = tmp.path().join(super::super::run::LOCK);
+    std::fs::write(
+        &lock,
+        format!(
+            "pid {} at 2026-01-01T00:00:00Z\nlocked\n",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    let holder = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    holder.try_lock().unwrap();
+    assert!(writer_alive(&lock), "held by a live run");
+    drop(holder);
+    assert!(!writer_alive(&lock), "released by a run that held it");
+}

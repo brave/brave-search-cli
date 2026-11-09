@@ -11834,7 +11834,9 @@ fn aged_locked_run(state: &std::path::Path, id: &str, lock: &str) -> std::path::
 #[test]
 fn prune_keeps_a_run_whose_aged_lock_is_still_held() {
     let dir = TempDir::new().unwrap();
-    let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", "pid 1\n");
+    // A dead pid: only the lock keeps the run.
+    let lock = DEAD_PID_LOCK.to_owned() + "locked\n";
+    let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", &lock);
     let holder = std::fs::File::options()
         .read(true)
         .write(true)
@@ -11856,13 +11858,47 @@ fn prune_keeps_a_run_whose_aged_lock_is_still_held() {
     assert!(!run.exists(), "a released lock still kept the run: {v}");
 }
 
-/// The pid in a lock is not liveness: a crashed run's pid may name a live process since. Ours is
-/// always live, and the run still goes.
+/// A clock that jumps ages a live run's lock; the pid it names still decides.
 #[cfg(unix)]
 #[test]
-fn an_aged_unheld_lock_naming_a_live_pid_is_pruned() {
+fn prune_keeps_a_run_whose_aged_lock_names_a_live_pid() {
     let dir = TempDir::new().unwrap();
-    let lock = format!("pid {} at 2026-01-01T00:00:00Z\n", std::process::id());
+    let run = dir.path().join("bx/council/20260101-120000-aaaaaa");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(run.join("brief.md"), "b").unwrap();
+    age_by_days(&run.join("brief.md"), 31);
+    let lock = run.join(".council-lock");
+    std::fs::write(
+        &lock,
+        format!("pid {} at 2026-01-01T00:00:00Z\n", std::process::id()),
+    )
+    .unwrap();
+    age_by_days(&lock, 31);
+    for extra in [&["--dry-run"][..], &[]] {
+        let (code, v) = prune_json(dir.path(), extra);
+        assert_eq!(code, Some(0), "{v}");
+        assert_eq!(
+            v["locked"],
+            serde_json::json!([run.file_name().unwrap().to_str()]),
+            "{v}"
+        );
+        assert!(
+            run.join("brief.md").exists(),
+            "{extra:?} removed a live run: {v}"
+        );
+    }
+}
+
+/// A lock its writer held is judged by the lock, not the pid: a crashed run's pid may name a live
+/// process since. Ours is always live, and the run still goes.
+#[cfg(unix)]
+#[test]
+fn an_aged_unheld_lock_its_writer_held_is_pruned_whatever_its_pid() {
+    let dir = TempDir::new().unwrap();
+    let lock = format!(
+        "pid {} at 2026-01-01T00:00:00Z\nlocked\n",
+        std::process::id()
+    );
     let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", &lock);
     let (code, v) = prune_json(dir.path(), &[]);
     assert_eq!(code, Some(0), "{v}");
@@ -11902,7 +11938,19 @@ fn a_crashed_writer_releases_its_lock() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     age_by_days(&run.join("brief.md"), 31);
-    age_by_days(&run.join(".council-lock"), 31);
+    let lock = run.join(".council-lock");
+    let started = std::time::Instant::now();
+    while !std::fs::read_to_string(&lock)
+        .unwrap()
+        .ends_with("\nlocked\n")
+    {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "never said it holds the lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    age_by_days(&lock, 31);
     let id = run.file_name().unwrap().to_str().unwrap().to_string();
     let (_, v) = prune_json(dir.path(), &[]);
     assert_eq!(
@@ -11920,57 +11968,30 @@ fn a_crashed_writer_releases_its_lock() {
     );
 }
 
-/// A lock that is not a regular file is never adopted, and judging it never blocks: a link
-/// (followed, it would be judged by its target) and a FIFO.
+/// A lock planted as a FIFO is judged without blocking, read-write opens never wait for a peer,
+/// and, naming no pid, it reads as a dead run's, as before runs held their lock.
 #[cfg(unix)]
 #[test]
-fn an_aged_lock_that_is_a_link_or_a_fifo_is_kept_without_hanging() {
+fn an_aged_lock_that_is_a_fifo_is_judged_without_hanging() {
     let dir = TempDir::new().unwrap();
-    let target = dir.path().join("elsewhere");
-    std::fs::write(&target, "pid 1\n").unwrap();
-    age_by_days(&target, 31);
-    for (id, plant) in [
-        ("20260101-120000-aaaaaa", "link"),
-        ("20260101-120001-bbbbbb", "fifo"),
-    ] {
-        let run = dir.path().join("bx/council").join(id);
-        std::fs::create_dir_all(&run).unwrap();
-        std::fs::write(run.join("brief.md"), "b").unwrap();
-        age_by_days(&run.join("brief.md"), 31);
-        let lock = run.join(".council-lock");
-        let c = std::ffi::CString::new(lock.to_str().unwrap()).unwrap();
-        if plant == "link" {
-            std::os::unix::fs::symlink(&target, &lock).unwrap();
-        } else {
-            // SAFETY: a valid C string; mkfifo only creates the node.
-            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-        }
-        // Aged itself, not its target, so only its type keeps it.
-        let ago = libc::timespec {
-            tv_sec: when_days(31)
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as libc::time_t,
-            tv_nsec: 0,
-        };
-        // SAFETY: a valid C string and two timespecs; the link itself is touched, never followed.
-        let rc = unsafe {
-            libc::utimensat(
-                libc::AT_FDCWD,
-                c.as_ptr(),
-                [ago, ago].as_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        };
-        assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
-    }
+    let run = dir.path().join("bx/council/20260101-120000-aaaaaa");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(run.join("brief.md"), "b").unwrap();
+    age_by_days(&run.join("brief.md"), 31);
+    let lock = run.join(".council-lock");
+    let c = std::ffi::CString::new(lock.to_str().unwrap()).unwrap();
+    // SAFETY: a valid C string; mkfifo only creates the node.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(when_days(31)))
+        .unwrap();
     let (code, v) = prune_json(dir.path(), &[]);
     assert_eq!(code, Some(0), "{v}");
-    assert_eq!(
-        v["locked"],
-        serde_json::json!(["20260101-120000-aaaaaa", "20260101-120001-bbbbbb"]),
-        "{v}"
-    );
+    assert!(!run.exists(), "{v}");
 }
 
 /// By lstat, never by content: anything but a regular file keeps an old run's reply.

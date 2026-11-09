@@ -771,8 +771,8 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
         let before = entry_names(&dir);
         // Every run holds this lock while it writes, so taking it excludes a writer until the
         // removal. A lock older than the window is a dead run's (none outlives `MAX_SECONDS`)
-        // unless a run still holds it: the clock can jump. `--dry-run` only looks: creating the
-        // lock moves a brief-less run's age.
+        // unless its pid lives: the clock can jump. `--dry-run` only looks: creating the lock
+        // moves a brief-less run's age.
         let lock = dir.join(super::run::LOCK);
         let taken = if a.dry_run {
             match std::fs::symlink_metadata(&lock) {
@@ -788,7 +788,7 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
             Err(e)
                 if e.kind() == std::io::ErrorKind::AlreadyExists
                     && std::fs::symlink_metadata(&lock).is_ok_and(aged)
-                    && super::run::orphaned(&lock) =>
+                    && !writer_alive(&lock) =>
             {
                 None
             }
@@ -930,6 +930,46 @@ fn stale_rosters(dir: &std::path::Path, dry_run: bool) -> u64 {
         }
     }
     bytes
+}
+
+/// Whether the run that took `lock` still runs. A held lock is a live run, and an unheld one its
+/// writer held a dead one. Otherwise the pid decides: a reused pid keeps the run, the safe side.
+fn writer_alive(lock: &std::path::Path) -> bool {
+    // Write: an exclusive lock needs it on NFS.
+    if let Ok(f) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock)
+    {
+        match f.try_lock() {
+            // The kernel drops a run's lock with the process, however that died.
+            Err(std::fs::TryLockError::WouldBlock) => return true,
+            // `out_lock` adds this line only once it holds the lock.
+            Ok(())
+                if util::read_artifact(lock, 256)
+                    .is_ok_and(|s| s.lines().any(|l| l == "locked")) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    #[cfg(unix)]
+    if let Some(pid) = util::read_artifact(lock, 256).ok().and_then(|s| {
+        s.strip_prefix("pid ")?
+            .split_whitespace()
+            .next()?
+            .parse::<libc::pid_t>()
+            .ok()
+            .filter(|p| *p > 0)
+    }) {
+        // SAFETY: signal 0 sends nothing; it only asks whether `pid` exists.
+        return unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    #[cfg(not(unix))]
+    let _ = lock;
+    false
 }
 
 /// What a run holds, one level deep, so a failed removal can say what it destroyed. Raw names, so

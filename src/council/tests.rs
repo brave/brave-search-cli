@@ -6502,21 +6502,3 @@ fn every_wire_names_its_own_key_and_no_two_share_one() {
         }
     }
 }
-
-/// Liveness is the file lock, not the pid in it: held, the lock keeps its run; released, it does
-/// not. Runs everywhere, so Windows' `LockFileEx` is covered too.
-#[test]
-fn a_lock_is_orphaned_once_no_handle_holds_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let lock = tmp.path().join(super::run::LOCK);
-    std::fs::write(&lock, "pid 1\n").unwrap();
-    let holder = std::fs::File::options()
-        .read(true)
-        .write(true)
-        .open(&lock)
-        .unwrap();
-    holder.try_lock().unwrap();
-    assert!(!super::run::orphaned(&lock), "held by a live run");
-    drop(holder);
-    assert!(super::run::orphaned(&lock));
-}
