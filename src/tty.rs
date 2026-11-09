@@ -4,7 +4,7 @@
 /// process with echo still off.
 #[cfg(unix)]
 pub struct Hidden {
-    old: [Option<libc::sigaction>; 4],
+    old: [Option<libc::sigaction>; 5],
 }
 
 /// No terminal to hide on: `hide` is always `None`.
@@ -14,8 +14,15 @@ pub enum Hidden {}
 #[cfg(unix)]
 static SAVED: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
+/// SIGABRT too: `panic = "abort"` skips `Drop`.
 #[cfg(unix)]
-const SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+const SIGNALS: [libc::c_int; 5] = [
+    libc::SIGINT,
+    libc::SIGTERM,
+    libc::SIGHUP,
+    libc::SIGQUIT,
+    libc::SIGABRT,
+];
 
 /// The saved terminal, unread input discarded: the rest of a multi-line paste would otherwise run
 /// as shell commands. Not `TCSAFLUSH`, which on macOS first waits for output to drain.
@@ -34,12 +41,12 @@ fn restore() {
 extern "C" fn on_signal(sig: libc::c_int) {
     restore();
     // SAFETY: `SA_RESETHAND` restored the default action, so `sig` ends the process as it would
-    // have; it stays blocked until this handler returns.
+    // have; the full `sa_mask` keeps it blocked until this handler returns.
     unsafe { libc::raise(sig) };
 }
 
 #[cfg(unix)]
-fn put_back(old: &[Option<libc::sigaction>; 4]) {
+fn put_back(old: &[Option<libc::sigaction>; 5]) {
     for (sig, prev) in SIGNALS.iter().zip(old) {
         if let Some(p) = prev {
             // SAFETY: `p` is the disposition `sigaction` reported for `sig`.
@@ -54,16 +61,16 @@ pub fn hide() -> Option<Hidden> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         return None;
     }
-    let mut t = std::mem::MaybeUninit::<libc::termios>::uninit();
-    // SAFETY: fills `t` on success.
-    if unsafe { libc::tcgetattr(0, t.as_mut_ptr()) } != 0 {
+    // Zeroed: musl's `tcgetattr` leaves the fields the kernel's struct lacks unwritten.
+    // SAFETY: all-zero is a valid `termios`, filled on success.
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut t) } != 0 {
         return None;
     }
-    // SAFETY: initialised by the call above.
-    let saved = *SAVED.get_or_init(|| unsafe { t.assume_init() });
+    let saved = *SAVED.get_or_init(|| t);
     // Before hiding, so no signal finds echo off under the default action. An ignored signal
     // stays ignored: `nohup` must still survive a hangup.
-    let mut old = [None; 4];
+    let mut old = [None; 5];
     for (sig, slot) in SIGNALS.iter().zip(&mut old) {
         // SAFETY: a zeroed `sigaction` is valid; the calls read and write only these.
         unsafe {

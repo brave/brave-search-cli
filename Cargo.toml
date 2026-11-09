@@ -19,7 +19,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive", "env"] }
-ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
+# Exact: 3.4.1, a patch release, changed timeout semantics; tests/streaming.rs guards a bump.
+ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 dirs = "6.0.0"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -535,14 +535,20 @@ pub fn is_retryable(e: &ureq::Error) -> bool {
     }
 }
 
-/// Bounded as a whole, a dripping body included, by the agent's `timeout_global`.
+/// A `get_raw` call's whole budget, a dripping body included, whatever the agent sets.
+const GET_DEADLINE: Duration = Duration::from_secs(15);
+
 pub fn get_raw(
     agent: &ureq::Agent,
     url: &str,
     headers: &[(&str, String)],
     limit: u64,
 ) -> Result<Resp, ureq::Error> {
-    let mut req = agent.get(url);
+    let mut req = agent
+        .get(url)
+        .config()
+        .timeout_global(Some(GET_DEADLINE))
+        .build();
     for (k, v) in headers {
         req = req.header(*k, v);
     }

@@ -185,12 +185,13 @@ impl Pty {
 
     pub fn echo(&self) -> bool {
         use std::os::fd::AsRawFd;
-        let mut t = std::mem::MaybeUninit::<libc::termios>::uninit();
-        // SAFETY: fills `t` on success, checked before it is read.
-        unsafe {
-            assert_eq!(libc::tcgetattr(self.probe.as_raw_fd(), t.as_mut_ptr()), 0);
-            t.assume_init().c_lflag & libc::ECHO != 0
-        }
+        // SAFETY: all-zero is a valid `termios`; musl leaves some fields unwritten.
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(self.probe.as_raw_fd(), &mut t) },
+            0
+        );
+        t.c_lflag & libc::ECHO != 0
     }
 
     /// Waits for echo to be `on`, failing rather than hanging.

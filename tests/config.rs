@@ -309,11 +309,17 @@ fn a_pasted_key_is_hidden_then_echo_is_restored() {
 #[test]
 fn a_signal_at_the_prompt_restores_echo_and_still_kills() {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
-    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+    for sig in [
+        libc::SIGINT,
+        libc::SIGTERM,
+        libc::SIGHUP,
+        libc::SIGQUIT,
+        libc::SIGABRT,
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let pty = Pty::new();
         let mut c = prompt(&pty, &dir.path().join("c.json"));
-        // SAFETY: async-signal-safe; no core file from SIGQUIT.
+        // SAFETY: async-signal-safe; no core file from SIGQUIT or SIGABRT.
         unsafe {
             c.pre_exec(|| {
                 let none = libc::rlimit {

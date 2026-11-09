@@ -5573,8 +5573,8 @@ fn an_out_leaf_that_became_a_link_is_refused() {
     super::run::out_dir(&tmp.join("ours")).unwrap();
 }
 
-/// A link planted mid-path after `check_out` (`mkdir` follows it) is refused, so no write goes
-/// through it.
+/// A link planted mid-path after `check_out` (`mkdir` follows it) is refused before any file is
+/// written through it.
 #[test]
 #[cfg(unix)]
 fn a_link_planted_mid_path_is_refused() {

@@ -687,8 +687,8 @@ fn an_oversized_body_is_detected_by_the_read_loop_and_flagged() {
     }
 }
 
-/// A body dripped a byte at a time is cut off at the agent's `timeout_global`. What arrived is
-/// kept and flagged, since the status line was paid for.
+/// A body dripped a byte at a time is cut off at `get_raw`'s own deadline, though the agent here
+/// sets none. What arrived is kept and flagged, since the status line was paid for.
 #[test]
 fn a_dripped_get_body_is_cut_off_at_the_calls_own_deadline() {
     use std::io::Write as _;
@@ -705,19 +705,18 @@ fn a_dripped_get_body_is_cut_off_at_the_calls_own_deadline() {
         while r.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
             line.clear();
         }
-        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
-        // Ends on its own, so a regression fails on the elapsed time instead of hanging.
-        for _ in 0..50 {
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n");
+        // Twice the deadline, then gone, so a regression fails on the elapsed time.
+        for _ in 0..150 {
             if sock.write_all(b"x").is_err() {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(200));
         }
     });
     let agent = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
             .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(1)))
             .build(),
     );
     let started = std::time::Instant::now();
@@ -725,7 +724,7 @@ fn a_dripped_get_body_is_cut_off_at_the_calls_own_deadline() {
     let r = get_raw(&agent, &url, &[], 4096).unwrap();
     let took = started.elapsed();
     assert!(
-        took < Duration::from_secs(3),
+        took < GET_DEADLINE + Duration::from_secs(3),
         "the drip outlived the deadline: {took:?}"
     );
     assert_eq!(r.status, 200);

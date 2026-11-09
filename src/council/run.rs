@@ -801,15 +801,15 @@ pub(super) fn orphaned(path: &std::path::Path) -> bool {
 fn out_lock(dir: &std::path::Path) -> Result<OutLock, String> {
     let path = dir.join(LOCK);
     match lock(dir) {
-        // Held for the whole run: the kernel drops it with the process, however that died. A
-        // filesystem without locks still runs.
+        // Held for the whole run: the kernel drops it with the process, however that died. Not
+        // blocking: the file is new, and a filesystem without locks still runs.
         Ok(mut l) => {
             l.1 = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(&path)
                 .ok()
-                .filter(|f| f.lock().is_ok());
+                .filter(|f| f.try_lock().is_ok());
             Ok(l)
         }
         // `create_new` is the authority: it catches a run that took the lock after `plan` looked.
