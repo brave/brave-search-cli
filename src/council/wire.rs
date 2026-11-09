@@ -42,8 +42,10 @@ pub struct Wire {
     pub tools: &'static str,
     /// (header name, value prefix): the name differs too.
     pub auth: (&'static str, &'static str),
-    /// Key variable, signup page and key prefix: fields, so a new wire cannot omit one.
+    /// Key variable, base-URL override, signup page and key prefix: fields, so a new wire cannot
+    /// omit one.
     pub env: &'static str,
+    pub base_env: &'static str,
     pub signup: &'static str,
     pub key_prefix: &'static str,
     pub headers: &'static [(&'static str, &'static str)],
@@ -90,6 +92,7 @@ pub static OPENROUTER: Wire = Wire {
     tools: OR_TOOLS,
     auth: ("Authorization", "Bearer "),
     env: "OPENROUTER_API_KEY",
+    base_env: "BX_COUNCIL_OPENROUTER_BASE_URL",
     signup: "https://openrouter.ai/keys",
     key_prefix: "sk-or-v1-",
     headers: &[],
@@ -127,6 +130,7 @@ pub static ANTHROPIC: Wire = Wire {
     tools: ANT_TOOLS,
     auth: ("x-api-key", ""),
     env: "ANTHROPIC_API_KEY",
+    base_env: "BX_COUNCIL_ANTHROPIC_BASE_URL",
     signup: "https://console.anthropic.com/settings/keys",
     key_prefix: "sk-ant-",
     headers: &[("anthropic-version", "2023-06-01")],
@@ -165,6 +169,7 @@ pub static OPENAI: Wire = Wire {
     tools: OAI_TOOLS,
     auth: ("Authorization", "Bearer "),
     env: "OPENAI_API_KEY",
+    base_env: "BX_COUNCIL_OPENAI_BASE_URL",
     signup: "https://platform.openai.com/api-keys",
     key_prefix: "sk-proj-",
     headers: &[],

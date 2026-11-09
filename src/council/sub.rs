@@ -1234,8 +1234,21 @@ fn doctor(a: &CouncilArgs, brave_key: &str) -> Result<i32, String> {
         };
         members.push((slug, w, rate, note));
     }
+    // Where each wire's key goes. A refused override fails only a transport the panel uses, as
+    // a malformed key does.
+    let endpoints: Vec<(&wire::Wire, bool, Result<String, String>)> = wire::TABLE
+        .iter()
+        .map(|w| (*w, cfg::base_override(w).is_some(), cfg::base_url(w)))
+        .collect();
+    let bad_endpoint = endpoints
+        .iter()
+        .any(|(w, _, b)| b.is_err() && members.iter().any(|m| m.1 == w.name));
     // Judged against the panel that would run, not a count of keys.
-    let short = brave_bad || !missing.is_empty() || brave.is_none() || panel_error.is_some();
+    let short = brave_bad
+        || !missing.is_empty()
+        || brave.is_none()
+        || panel_error.is_some()
+        || bad_endpoint;
 
     if machine(a) {
         say!(
@@ -1268,6 +1281,13 @@ fn doctor(a: &CouncilArgs, brave_key: &str) -> Result<i32, String> {
                     "name": util::sanitize(n),
                     "also": cfg::panel_aliases_for(n),
                     "members": m.iter().map(|s| util::sanitize(s)).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "endpoints": endpoints.iter().map(|(w, overridden, b)| serde_json::json!({
+                    "transport": w.name,
+                    "env": w.base_env,
+                    "overridden": overridden,
+                    "base": b.as_deref().ok().map(util::sanitize),
+                    "error": b.as_ref().err().map(|e| util::sanitize(e)),
                 })).collect::<Vec<_>>(),
                 "paths": paths.iter().map(|(l, p)| serde_json::json!({
                     "what": l,
@@ -1330,6 +1350,12 @@ fn doctor(a: &CouncilArgs, brave_key: &str) -> Result<i32, String> {
             " (Brave's list price — set brave_price_per_call_usd for your plan)"
         }
     );
+    for (w, _, b) in endpoints.iter().filter(|(_, o, _)| *o) {
+        match b {
+            Ok(base) => say!("  endpoint    {} → {base} ({})", w.name, w.base_env),
+            Err(e) => say!("  endpoint    {e}"),
+        }
+    }
     say!("  aliases     {}", aliases.join(", "));
     for (name, list) in &panels {
         let also = cfg::panel_aliases_for(name);

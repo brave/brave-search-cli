@@ -5586,6 +5586,97 @@ fn doctor_passes_when_only_an_unused_provider_key_is_malformed() {
     assert_eq!(openai["set"], false, "the row still warns: {v}");
 }
 
+/// `doctor` for a panel routed entirely through OpenRouter, with the keys it needs and only the
+/// base-URL overrides given.
+fn doctor_with(home: &std::path::Path, format: &str, overrides: &[(&str, &str)]) -> Output {
+    let cfg_dir = bx_root(home).join("brave-search");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(cfg_dir.join("council.json"), r#"{"direct":[]}"#).unwrap();
+    let mut c = bx_in(home);
+    c.args(["council", "doctor", "--format", format])
+        .env("OPENROUTER_API_KEY", "sk-or-v1-mocktoken")
+        .env("BRAVE_SEARCH_API_KEY", "BSAtestkey000");
+    for var in [
+        "BX_COUNCIL_OPENROUTER_BASE_URL",
+        "BX_COUNCIL_ANTHROPIC_BASE_URL",
+        "BX_COUNCIL_OPENAI_BASE_URL",
+    ] {
+        c.env_remove(var);
+    }
+    c.envs(overrides.iter().copied()).bounded_output()
+}
+
+/// Where a key is sent is stated, and only an override earns a text line: the defaults are the
+/// vendors' own hosts.
+#[test]
+fn doctor_names_an_overridden_endpoint_and_only_that_one() {
+    let dir = TempDir::new().unwrap();
+    let ov = [("BX_COUNCIL_OPENROUTER_BASE_URL", "http://127.0.0.1:8080")];
+    let out = doctor_with(dir.path(), "json", &ov);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    let by = |t: &str| {
+        v["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["transport"] == t)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by("openrouter")["overridden"], true, "{v}");
+    assert_eq!(by("openrouter")["base"], "http://127.0.0.1:8080", "{v}");
+    assert_eq!(by("anthropic")["overridden"], false, "{v}");
+    assert_eq!(by("anthropic")["base"], "https://api.anthropic.com", "{v}");
+
+    let text = String::from_utf8_lossy(&doctor_with(dir.path(), "text", &ov).stdout).into_owned();
+    assert!(
+        text.contains("openrouter → http://127.0.0.1:8080 (BX_COUNCIL_OPENROUTER_BASE_URL)"),
+        "{text}"
+    );
+    assert_eq!(text.matches("endpoint ").count(), 1, "{text}");
+
+    // Blank is unset, as a run reads it.
+    let blank = doctor_with(
+        dir.path(),
+        "json",
+        &[("BX_COUNCIL_OPENROUTER_BASE_URL", " ")],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&blank.stdout).unwrap();
+    assert_eq!(blank.status.code(), Some(0), "{v}");
+    assert_eq!(v["endpoints"][0]["overridden"], false, "{v}");
+}
+
+/// A refused override fails `doctor` only on a transport the panel uses, as a malformed key does,
+/// and never echoes the value, which can carry a key.
+#[test]
+fn a_refused_endpoint_override_fails_doctor_only_for_a_transport_the_panel_uses() {
+    let bad = "https://evil.example/sk-or-v1-leakedleaked";
+    for (var, code) in [
+        ("BX_COUNCIL_OPENROUTER_BASE_URL", 2),
+        ("BX_COUNCIL_OPENAI_BASE_URL", 0),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let out = doctor_with(dir.path(), "json", &[(var, bad)]);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(out.status.code(), Some(code), "{var}: {v}");
+        assert!(
+            v["endpoints"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["env"] == var && e["error"].is_string() && e["base"].is_null()),
+            "{var}: {v}"
+        );
+        for stream in [&out.stdout, &out.stderr] {
+            assert!(
+                !String::from_utf8_lossy(stream).contains("leaked"),
+                "{var}: {v}"
+            );
+        }
+    }
+}
+
 #[test]
 fn doctor_reports_keys_even_when_the_default_panel_cannot_resolve() {
     let dir = TempDir::new().unwrap();

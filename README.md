@@ -434,7 +434,7 @@ is built, or a question where one model's answer is not evidence.
 ### Quick Start
 
 ```bash
-bx council doctor                  # keys, panels, pricing and file paths; free, no network
+bx council doctor                  # keys, endpoints, panels, pricing, paths; free, no network
 bx council @design.md --dry-run    # the plan and what your past runs cost; spends nothing
 bx council @design.md              # run it: a few dollars and up to 15 minutes by default
 ```
