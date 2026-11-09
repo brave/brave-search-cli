@@ -409,8 +409,7 @@ pub fn post_json_stream(
 pub struct Resp {
     pub status: u16,
     pub body: Vec<u8>,
-    /// The raw header value; the caller parses it.
-    pub retry_after: Option<String>,
+    retry_after: Option<String>,
     /// The body exceeded the caller's limit, so `body` is empty for a reason the operator can
     /// act on.
     oversized: bool,
@@ -455,6 +454,20 @@ impl Resp {
     /// on the final read.
     pub fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    /// `Retry-After` as delta-seconds or IMF-fixdate. Any other form, zero, or a past date is
+    /// `None`, which the caller reads as "use the computed backoff": clock skew must not turn a
+    /// rate limit into a busy retry.
+    pub fn retry_after(&self) -> Option<Duration> {
+        let v = self.retry_after.as_deref()?.trim();
+        if let Some(secs) = crate::council::util::unsigned::<u64>(v) {
+            return (secs > 0).then(|| Duration::from_secs(secs));
+        }
+        let at = crate::council::util::http_date(v)?;
+        at.checked_sub(crate::council::util::secs_now())
+            .filter(|&d| d > 0)
+            .map(Duration::from_secs)
     }
 }
 

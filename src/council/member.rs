@@ -457,13 +457,7 @@ impl Member<'_> {
                             self.account(r, &t, ceiling);
                             // A 2xx carries no advice: a retryable error on a 200 is still one.
                             let status = t.status.filter(|s| !(200..300).contains(s));
-                            Err((
-                                m.clone(),
-                                resp.retry_after
-                                    .as_deref()
-                                    .and_then(super::util::retry_after),
-                                status,
-                            ))
+                            Err((m.clone(), resp.retry_after(), status))
                         }
                         _ => Ok(t),
                     }
