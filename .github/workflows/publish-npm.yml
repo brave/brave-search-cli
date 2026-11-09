@@ -86,6 +86,9 @@ jobs:
             # rather than failing on a bare "install: cannot stat".
             [ -f "$src" ] ||
               { echo "::error::$TAG has no $target asset; it predates that platform and cannot be published"; exit 1; }
+            # `sha256sum -c` above checks only the sidecars that exist.
+            [ -f "$src.sha256" ] ||
+              { echo "::error::$TAG has no checksum for $target"; exit 1; }
 
             install -Dm755 "$src" "npm/platforms/${npm_platform}/bin/bx${ext}"
           }
