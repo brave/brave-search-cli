@@ -1040,41 +1040,51 @@ fn set_key(a: &CouncilArgs) -> Result<i32, String> {
 
     let c = cfg::load(None)?;
     note!("Keys are saved to {where_to}, readable only by you.");
-    note!("(input is visible — to avoid it, export the env var instead)");
-
     let mut accepted: Vec<(&str, String)> = Vec::new();
     let mut bad = false;
-    for (name, url) in signup().filter(|(n, _)| only.is_none_or(|o| o == *n)) {
-        note!(
-            "\n{name} — {} · {url}",
-            if cfg::key_for(&c, name).is_some() {
-                "already set"
-            } else {
-                env_of(name)
+    // One guard for the whole walk: re-hiding per prompt could drop a paste meant for the next.
+    // Echo is back when it leaves this block.
+    {
+        let hidden = crate::tty::hide();
+        if hidden.is_none() {
+            note!("(input is visible — to avoid it, export the env var instead)");
+        }
+        for (name, url) in signup().filter(|(n, _)| only.is_none_or(|o| o == *n)) {
+            note!(
+                "\n{name} — {} · {url}",
+                if cfg::key_for(&c, name).is_some() {
+                    "already set"
+                } else {
+                    env_of(name)
+                }
+            );
+            std::io::stderr()
+                .write_all(b"  paste key (blank to skip): ")
+                .ok();
+            std::io::stderr().flush().ok();
+            let mut line = String::new();
+            let read = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+            if hidden.is_some() {
+                note!("");
             }
-        );
-        std::io::stderr()
-            .write_all(b"  paste key (blank to skip): ")
-            .ok();
-        std::io::stderr().flush().ok();
-        let mut line = String::new();
-        // Ends the walk, but the keys already accepted are still saved.
-        if let Err(e) = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
-            note!("  not read: {e}");
-            bad = true;
-            break;
+            // Ends the walk, but the keys already accepted are still saved.
+            if let Err(e) = read {
+                note!("  not read: {e}");
+                bad = true;
+                break;
+            }
+            let key = line.trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            // Reported, not fatal, so the keys already entered survive.
+            if let Err(e) = cfg::check_key(name, &key) {
+                note!("  not saved: {e}");
+                bad = true;
+                continue;
+            }
+            accepted.push((name, key));
         }
-        let key = line.trim().to_string();
-        if key.is_empty() {
-            continue;
-        }
-        // Reported, not fatal, so the keys already entered survive.
-        if let Err(e) = cfg::check_key(name, &key) {
-            note!("  not saved: {e}");
-            bad = true;
-            continue;
-        }
-        accepted.push((name, key));
     }
 
     // An empty pipe to `--via` is a failure; at a prompt, blank means "never mind".

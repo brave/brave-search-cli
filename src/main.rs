@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod council;
 mod query;
+mod tty;
 
 use std::borrow::Cow;
 use std::net::{IpAddr, ToSocketAddrs};

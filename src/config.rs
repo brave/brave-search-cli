@@ -236,15 +236,24 @@ Then configure it (pick one):
 
 /// Prompts and reads an API key from stdin.
 fn read_key_line() -> Result<String, String> {
-    eprintln!("(input will be visible — to avoid, set BRAVE_SEARCH_API_KEY env var instead)");
-    eprint!("Paste your API key: ");
-    io::stderr().flush().ok();
-
     let mut line = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
+    // Echo is back when the guard leaves this block.
+    {
+        let hidden = crate::tty::hide();
+        if hidden.is_none() {
+            eprintln!(
+                "(input will be visible — to avoid, set BRAVE_SEARCH_API_KEY env var instead)"
+            );
+        }
+        eprint!("Paste your API key: ");
+        io::stderr().flush().ok();
+        let read = io::stdin().lock().read_line(&mut line);
+        if hidden.is_some() {
+            eprintln!();
+        }
+        read
+    }
+    .map_err(|e| e.to_string())?;
     let key = line.trim().to_string();
 
     if key.is_empty() {

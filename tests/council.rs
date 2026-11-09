@@ -5053,44 +5053,18 @@ fn set_key_says_when_an_exported_env_var_overrides_the_saved_key() {
     assert!(saved.contains("sk-ant-saved"), "{saved}");
 }
 
-/// A pseudo-terminal: the master to type into, and the slave as a child's stdin.
-#[cfg(unix)]
-fn pty() -> (std::fs::File, Stdio) {
-    use std::os::fd::FromRawFd;
-    let (mut master, mut slave) = (0, 0);
-    // SAFETY: openpty writes two fds on success; null name/termios/winsize are allowed.
-    let rc = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
-    // SAFETY: both fds were just opened and are owned by nothing else.
-    unsafe {
-        (
-            std::fs::File::from_raw_fd(master),
-            Stdio::from(std::os::fd::OwnedFd::from_raw_fd(slave)),
-        )
-    }
-}
-
-/// Here the read error is a non-UTF-8 paste.
+/// Here the read error is a non-UTF-8 paste. Typed before the prompt, as a fast paste lands:
+/// hiding must not discard it, and the read error still restores echo.
 #[cfg(unix)]
 #[test]
 fn a_read_error_after_one_accepted_key_still_saves_that_key() {
     let dir = TempDir::new().unwrap();
-    let (mut master, slave) = pty();
+    let mut pty = common::Pty::new();
+    pty.type_in(b"sk-or-v1-realkeyrealkeyrealkey\n\xff\xfe\n");
     let child = bx_in(dir.path())
         .args(["council", "set-key"])
-        .stdin(slave)
+        .stdin(pty.stdin())
         .spawn()
-        .unwrap();
-    master
-        .write_all(b"sk-or-v1-realkeyrealkeyrealkey\n\xff\xfe\n")
         .unwrap();
     let out = finish(child);
     let err = String::from_utf8_lossy(&out.stderr);
@@ -5099,6 +5073,35 @@ fn a_read_error_after_one_accepted_key_still_saves_that_key() {
     let saved =
         std::fs::read_to_string(bx_root(dir.path()).join("brave-search/council.json")).unwrap();
     assert!(saved.contains("sk-or-v1-realkeyrealkeyrealkey"), "{saved}");
+    assert!(pty.echo(), "echo left off");
+}
+
+/// The walk hides every prompt and echoes no key, then restores echo.
+#[cfg(unix)]
+#[test]
+fn a_pasted_key_is_hidden_then_echo_is_restored() {
+    let dir = TempDir::new().unwrap();
+    let mut pty = common::Pty::new();
+    let child = bx_in(dir.path())
+        .args(["council", "set-key"])
+        .stdin(pty.stdin())
+        .spawn()
+        .unwrap();
+    pty.wait_echo(false);
+    // One key, then a blank for each later prompt.
+    pty.type_in(b"sk-or-v1-realkeyrealkeyrealkey\n\n\n");
+    let out = finish(child);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(pty.echo(), "echo left off");
+    let echoed = pty.echoed();
+    assert!(
+        !String::from_utf8_lossy(&echoed).contains("realkey"),
+        "a key was echoed: {echoed:?}"
+    );
 }
 
 #[test]

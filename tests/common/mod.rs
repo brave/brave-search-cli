@@ -125,3 +125,113 @@ impl Bounded for Command {
         finish(self.spawn().unwrap())
     }
 }
+
+/// A pseudo-terminal for a child's stdin: typed into, its echo captured, its modes probed.
+#[cfg(unix)]
+pub struct Pty {
+    master: std::fs::File,
+    /// A slave fd held open, so modes stay readable after the child exits.
+    probe: std::fs::File,
+    /// Everything echoed, drained by a thread so output never backs up.
+    seen: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+#[cfg(unix)]
+impl Pty {
+    pub fn new() -> Self {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: openpty writes two fds on success; null name/termios/winsize are allowed.
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: both fds were just opened and are owned by nothing else.
+        let (master, probe) = unsafe {
+            (
+                std::fs::File::from_raw_fd(master),
+                std::fs::File::from_raw_fd(slave),
+            )
+        };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut reader, sink) = (master.try_clone().unwrap(), seen.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                sink.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        Pty {
+            master,
+            probe,
+            seen,
+        }
+    }
+
+    pub fn stdin(&self) -> Stdio {
+        Stdio::from(self.probe.try_clone().unwrap())
+    }
+
+    pub fn type_in(&mut self, bytes: &[u8]) {
+        std::io::Write::write_all(&mut self.master, bytes).unwrap();
+    }
+
+    pub fn echo(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut t = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: fills `t` on success, checked before it is read.
+        unsafe {
+            assert_eq!(libc::tcgetattr(self.probe.as_raw_fd(), t.as_mut_ptr()), 0);
+            t.assume_init().c_lflag & libc::ECHO != 0
+        }
+    }
+
+    /// Waits for echo to be `on`, failing rather than hanging.
+    #[track_caller]
+    pub fn wait_echo(&self, on: bool) {
+        let started = std::time::Instant::now();
+        while self.echo() != on {
+            assert!(started.elapsed() < LIMIT, "echo never turned {on}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Input typed but never read: what a shell would run after the child exits.
+    pub fn unread(&self) -> usize {
+        use std::os::fd::AsRawFd;
+        let mut n: libc::c_int = 0;
+        // SAFETY: FIONREAD writes one int.
+        assert_eq!(
+            unsafe { libc::ioctl(self.probe.as_raw_fd(), libc::FIONREAD, &mut n) },
+            0
+        );
+        n as usize
+    }
+
+    /// Everything echoed up to a marker typed now, once it comes back: echo is asynchronous, so
+    /// an empty read proves nothing.
+    #[track_caller]
+    pub fn echoed(&mut self) -> Vec<u8> {
+        const MARK: &[u8] = b"ECHO-MARKER\n";
+        self.type_in(MARK);
+        let started = std::time::Instant::now();
+        loop {
+            let seen = self.seen.lock().unwrap().clone();
+            if let Some(i) = seen
+                .windows(MARK.len() - 1)
+                .position(|w| w == &MARK[..MARK.len() - 1])
+            {
+                return seen[..i].to_vec();
+            }
+            assert!(started.elapsed() < LIMIT, "the marker was never echoed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
