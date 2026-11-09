@@ -37,8 +37,7 @@ mod search;
 mod sub;
 mod task;
 mod types;
-/// Crate-wide: `api::Resp::retry_after` reads an HTTP-date with it.
-pub(crate) mod util;
+mod util;
 mod wire;
 
 use clap::Args;

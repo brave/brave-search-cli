@@ -148,9 +148,10 @@ impl Tool<'_> {
                     self.down.store(r.status, Ordering::Relaxed);
                     return (Found::Unavailable(r.status), false);
                 }
-                Ok(r) if r.status == 429 || r.status >= 500 => {
-                    (format!("(search error HTTP {})", r.status), r.retry_after())
-                }
+                Ok(r) if r.status == 429 || r.status >= 500 => (
+                    format!("(search error HTTP {})", r.status),
+                    r.retry_after.as_deref().and_then(super::util::retry_after),
+                ),
                 Ok(r) => {
                     return (
                         Found::Failed(format!("(search error HTTP {})", r.status)),

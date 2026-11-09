@@ -1214,7 +1214,7 @@ fn only_faults_that_never_reached_the_provider_are_retryable() {
 
 #[test]
 fn a_malformed_retry_after_falls_back_to_the_computed_backoff() {
-    let d = |v: &str| Resp::new(429, b"{}", &[("retry-after", v)]).retry_after();
+    let d = util::retry_after;
     assert_eq!(d("30"), Some(std::time::Duration::from_secs(30)));
     // Honouring zero would busy-retry a rate limit.
     assert_eq!(d("0"), None);
@@ -2041,13 +2041,10 @@ fn anthropic_effort_none_is_the_lowest_effort_with_thinking_left_adaptive() {
 /// `from_secs` does no arithmetic, so no header can abort a run under `panic = "abort"`.
 #[test]
 fn a_retry_after_at_the_integer_ceiling_does_not_panic() {
-    let r = crate::api::Resp::new(429, b"", &[("Retry-After", "18446744073709551615")]);
-    assert_eq!(
-        r.retry_after(),
-        Some(std::time::Duration::from_secs(u64::MAX))
-    );
+    let r = util::retry_after("18446744073709551615");
+    assert_eq!(r, Some(std::time::Duration::from_secs(u64::MAX)));
     // Longer than any budget: a stop, not a sleep.
-    assert!(r.retry_after().unwrap() > std::time::Duration::from_secs(86_400));
+    assert!(r.unwrap() > std::time::Duration::from_secs(86_400));
 }
 
 #[test]
@@ -4994,7 +4991,7 @@ fn the_run_cost_is_the_sum_of_the_member_costs_it_publishes() {
 
 #[test]
 fn a_retry_after_http_date_is_read_as_well_as_delta_seconds() {
-    let d = |v: &str| Resp::new(429, b"{}", &[("retry-after", v)]).retry_after();
+    let d = util::retry_after;
     assert_eq!(d("30"), Some(std::time::Duration::from_secs(30)));
     assert_eq!(d("0"), None, "zero is not a delay");
 
@@ -5618,8 +5615,7 @@ fn an_obsolete_rfc850_or_asctime_retry_after_falls_back_to_computed_backoff() {
         "Wed Oct 21 07:28:00 2026",
     ] {
         assert_eq!(util::http_date(obsolete), None, "{obsolete}");
-        let r = Resp::new(429, b"{}", &[("retry-after", obsolete)]);
-        assert_eq!(r.retry_after(), None, "{obsolete}");
+        assert_eq!(util::retry_after(obsolete), None, "{obsolete}");
     }
 }
 

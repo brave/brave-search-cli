@@ -219,6 +219,18 @@ pub fn http_date(s: &str) -> Option<u64> {
     days.checked_mul(86_400)?.checked_add(secs)?.try_into().ok()
 }
 
+/// `Retry-After` as delta-seconds or IMF-fixdate. Any other form, zero, or a past date is `None`,
+/// which the caller reads as "use the computed backoff": clock skew must not turn a rate limit
+/// into a busy retry.
+pub fn retry_after(v: &str) -> Option<std::time::Duration> {
+    let v = v.trim();
+    let secs = match unsigned::<u64>(v) {
+        Some(s) => s,
+        None => http_date(v)?.checked_sub(secs_now())?,
+    };
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
 fn parts(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
     let (y, mo, d) = civil(days);
