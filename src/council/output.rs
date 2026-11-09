@@ -72,6 +72,13 @@ fn hit_rate(prompt: u64, cache_read: Option<u64>) -> Option<Value> {
     (prompt > 0).then(|| json!(((read as f64 / prompt as f64) * 1000.0).round() / 1000.0))
 }
 
+/// One wire's retention posture, as both the dry run and the manifest publish it.
+pub(super) fn retention_json(w: &'static wire::Wire, zdr: bool) -> Value {
+    let r = wire::retention_of(w, zdr);
+    json!({"requested_zdr": zdr, "mechanism": r.mechanism,
+           "enforced_per_request": r.enforced_per_request})
+}
+
 fn member_json(m: &Member, limits: &Value, zdr: bool, split: bool) -> Value {
     let (status, reason, error, action, partial) = match &m.outcome {
         Outcome::Delivered { partial_grounding } => {
@@ -97,11 +104,9 @@ fn member_json(m: &Member, limits: &Value, zdr: bool, split: bool) -> Value {
         // By the wire the request went to; `doctor` carries the prose.
         (
             "retention",
-            wire::wire_for(m.transport).ok().map(|w| {
-                let r = wire::retention_of(w, zdr);
-                json!({"requested_zdr": zdr, "mechanism": r.mechanism,
-                       "enforced_per_request": r.enforced_per_request})
-            }),
+            wire::wire_for(m.transport)
+                .ok()
+                .map(|w| retention_json(w, zdr)),
         ),
         ("status", Some(status.into())),
         ("reason", reason.map(Into::into)),

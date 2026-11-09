@@ -350,6 +350,7 @@ fn print_plan(a: &CouncilArgs, p: &Planned, out: Option<&std::path::Path>, brave
                     ("max_tokens", Some(r.start_tokens.into())),
                     ("max_tokens_ceiling", Some(r.cap.into())),
                     ("priced", Some(r.rate.is_some().into())),
+                    ("retention", Some(output::retention_json(r.wire, cfg::zdr(c)))),
                     ("providers", Some(cfg::providers_for(c, &r.bare))
                         .filter(|v| !v.is_empty())
                         .map(Into::into)),
@@ -393,22 +394,40 @@ fn print_plan(a: &CouncilArgs, p: &Planned, out: Option<&std::path::Path>, brave
         return;
     }
     say!("task     {} ({})", t.name, t.source);
+    let zdr = cfg::zdr(c);
     for r in plan {
         let pinned = cfg::providers_for(c, &r.bare);
         say!(
-            "  {:<32} {:<11} {} effort={} max_tokens={}→{}{}",
+            "  {:<32} {:<11} {} effort={} max_tokens={}→{} retention={}{}",
             r.slug,
             r.wire.name,
             r.base,
             (r.wire.level)(t.effort),
             r.start_tokens,
             r.cap,
+            wire::retention_of(r.wire, zdr).mechanism,
             if pinned.is_empty() {
                 String::new()
             } else {
                 format!(" providers={}", pinned.join(","))
             }
         );
+    }
+    if !zdr {
+        say!("retention not requested — \"zdr\": false is set");
+    } else {
+        let loose: Vec<&str> = plan
+            .iter()
+            .filter(|r| !wire::retention_of(r.wire, zdr).enforced_per_request)
+            .map(|r| r.slug.as_str())
+            .collect();
+        if !loose.is_empty() {
+            say!(
+                "retention zero requested; not enforced per request for {} — their \
+                 organisation's settings decide",
+                loose.join(", ")
+            );
+        }
     }
     if let Some(d) = out {
         say!("writes   {}", util::sanitize(&d.display().to_string()));

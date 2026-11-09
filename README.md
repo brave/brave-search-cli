@@ -546,8 +546,9 @@ and send them to Brave, and what Brave returns goes back to the provider that as
 `--dry-run` states this egress before you spend. Send nothing those parties should not see.
 
 Zero data retention is requested by default; `"zdr": false` in `council.json` stops requesting
-it. What a transport can enforce differs, so `bx council doctor` prints it per transport and
-each manifest records what applied under `members[].retention`. While it is on, an OpenRouter
+it. What a transport can enforce differs, so `bx council doctor` prints it per transport,
+`--dry-run` per member before you spend, and each manifest records what applied under
+`members[].retention`. While it is on, an OpenRouter
 model with no zero-retention endpoint is refused before the run starts.
 
 Runs stay in the state directory (`doctor` prints it) until `bx council prune` removes those

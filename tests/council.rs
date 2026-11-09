@@ -6617,6 +6617,73 @@ fn the_dry_run_shows_each_member_the_effort_its_wire_sends() {
     assert_eq!(sent(1), ("openrouter".into(), "none".into()), "{plan}");
 }
 
+/// Retention is stated per member before any spend, in the manifest's shape, and the members
+/// without a per-request guarantee are named.
+#[test]
+fn the_dry_run_states_each_members_retention() {
+    let (port, _) = serve(mock(|_| reply(&prose())));
+    let dir = TempDir::new().unwrap();
+    let run = |format: &str| {
+        let out = bx("anthropic", port, dir.path())
+            .env(
+                "BX_COUNCIL_OPENROUTER_BASE_URL",
+                format!("http://127.0.0.1:{port}"),
+            )
+            .env("OPENROUTER_API_KEY", "sk-or-v1-mocktoken")
+            .args([
+                "council",
+                "SUBJECT",
+                "-m",
+                "anthropic/claude-opus-5.5,a/one",
+            ])
+            .args(["--dry-run", "--format", format])
+            .bounded_output();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let plan: serde_json::Value = serde_json::from_str(&run("json")).unwrap();
+    assert_eq!(
+        plan["members"][0]["retention"],
+        serde_json::json!({"requested_zdr": true, "mechanism": "account_policy",
+                           "enforced_per_request": false}),
+        "{plan}"
+    );
+    assert_eq!(
+        plan["members"][1]["retention"]["mechanism"],
+        "endpoint_routing"
+    );
+    assert_eq!(
+        plan["members"][1]["retention"]["enforced_per_request"],
+        true
+    );
+    let text = run("text");
+    assert!(
+        text.contains("not enforced per request for anthropic/claude-opus-5.5 —"),
+        "{text}"
+    );
+    assert!(text.contains("retention=endpoint_routing"), "{text}");
+
+    let cfg_dir = bx_root(dir.path()).join("brave-search");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(cfg_dir.join("council.json"), r#"{"zdr":false}"#).unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&run("json")).unwrap();
+    assert_eq!(
+        plan["members"][1]["retention"]["requested_zdr"], false,
+        "{plan}"
+    );
+    let text = run("text");
+    assert!(
+        text.contains(r#"retention not requested — "zdr": false is set"#),
+        "{text}"
+    );
+    assert!(!text.contains("zero requested"), "{text}");
+}
+
 #[test]
 fn two_runs_cannot_share_one_out_directory() {
     let (port, _) = serve(mock(|_| reply(&prose())));
