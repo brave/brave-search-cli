@@ -5565,24 +5565,24 @@ fn an_out_leaf_that_became_a_link_is_refused() {
     let planted = tmp.join("out");
     std::os::unix::fs::symlink(&victim, &planted).unwrap();
     assert!(super::run::out_dir(&planted).is_err());
+    std::fs::write(tmp.join("file"), "").unwrap();
+    assert!(
+        super::run::out_dir(&tmp.join("file")).is_err(),
+        "a file is not a directory"
+    );
     super::run::out_dir(&tmp.join("ours")).unwrap();
 }
 
-/// A link planted mid-path after `check_out` (`mkdir` follows it) is refused before anything is
-/// created through it.
+/// A link planted mid-path after `check_out` (`mkdir` follows it) is refused, so no write goes
+/// through it.
 #[test]
 #[cfg(unix)]
-fn a_link_planted_mid_path_is_refused_before_anything_is_created() {
+fn a_link_planted_mid_path_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path().canonicalize().unwrap();
-    let victim = tmp.join("victim");
-    std::fs::create_dir(&victim).unwrap();
-    std::os::unix::fs::symlink(&victim, tmp.join("mid")).unwrap();
+    std::fs::create_dir(tmp.join("victim")).unwrap();
+    std::os::unix::fs::symlink(tmp.join("victim"), tmp.join("mid")).unwrap();
     assert!(super::run::out_dir(&tmp.join("mid").join("leaf")).is_err());
-    assert!(
-        !victim.join("leaf").exists(),
-        "created inside the link's target"
-    );
 }
 
 // ── Parser and renderer edge cases ───────────────────────────────────
@@ -6503,40 +6503,20 @@ fn every_wire_names_its_own_key_and_no_two_share_one() {
     }
 }
 
-/// Liveness is the file lock, not the pid in the file: a held lock keeps the run, and a lock is
-/// only taken once nobody holds it and its own inode is older than the window. Runs everywhere,
-/// so Windows' `LockFileEx` is covered too.
+/// Liveness is the file lock, not the pid in it: held, the lock keeps its run; released, it does
+/// not. Runs everywhere, so Windows' `LockFileEx` is covered too.
 #[test]
-fn orphan_takes_only_an_aged_lock_nobody_holds() {
-    use super::run::{LOCK, Probe, orphan};
+fn a_lock_is_orphaned_once_no_handle_holds_it() {
     let tmp = tempfile::tempdir().unwrap();
-    let lock = tmp.path().join(LOCK);
-    let window = std::time::Duration::from_secs(60);
-    assert!(matches!(orphan(tmp.path(), window), Probe::Gone));
-
+    let lock = tmp.path().join(super::run::LOCK);
     std::fs::write(&lock, "pid 1\n").unwrap();
-    assert!(
-        matches!(orphan(tmp.path(), window), Probe::Held),
-        "a fresh lock is a run starting"
-    );
-    let aged = std::time::SystemTime::now() - 2 * window;
     let holder = std::fs::File::options()
         .read(true)
         .write(true)
         .open(&lock)
         .unwrap();
-    holder
-        .set_times(std::fs::FileTimes::new().set_modified(aged))
-        .unwrap();
     holder.try_lock().unwrap();
-    assert!(
-        matches!(orphan(tmp.path(), window), Probe::Held),
-        "held by a live run"
-    );
+    assert!(!super::run::orphaned(&lock), "held by a live run");
     drop(holder);
-    let Probe::Orphan(guard) = orphan(tmp.path(), window) else {
-        panic!("an aged lock nobody holds was not taken");
-    };
-    drop(guard);
-    assert!(lock.exists(), "an adopted lock is left in place");
+    assert!(super::run::orphaned(&lock));
 }

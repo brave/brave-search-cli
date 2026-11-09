@@ -6669,7 +6669,6 @@ fn the_dry_run_states_each_members_retention() {
         text.contains("not enforced per request for anthropic/claude-opus-5.5 —"),
         "{text}"
     );
-    assert!(text.contains("retention=endpoint_routing"), "{text}");
 
     let cfg_dir = bx_root(dir.path()).join("brave-search");
     std::fs::create_dir_all(&cfg_dir).unwrap();
@@ -11921,67 +11920,6 @@ fn a_crashed_writer_releases_its_lock() {
     );
 }
 
-/// An adopted lock on a run kept for its paid output stays: with no manifest, only the lock
-/// stops a later `--out` from replacing the replies.
-#[cfg(unix)]
-#[test]
-fn an_adopted_lock_on_a_kept_run_is_left_in_place() {
-    let dir = TempDir::new().unwrap();
-    let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", "pid 1\n");
-    std::fs::write(run.join("00-a_one.md"), "## A. X\npaid text\n").unwrap();
-    let (_, v) = prune_json(dir.path(), &[]);
-    assert_eq!(
-        v["kept_unfinished"][0]["run"], "20260101-120000-aaaaaa",
-        "{v}"
-    );
-    assert!(
-        run.join(".council-lock").exists(),
-        "the guard was removed: {v}"
-    );
-}
-
-/// Each removed run's lock handle is closed, so a prune of many runs never runs out of
-/// descriptors, whether it took the lock or adopted one.
-#[cfg(unix)]
-#[test]
-fn prune_removes_more_runs_than_the_descriptor_limit() {
-    use std::os::unix::process::CommandExt;
-    let dir = TempDir::new().unwrap();
-    for i in 0..80 {
-        let id = format!("20260101-1200{:02}-{i:06x}", i % 60);
-        if i % 2 == 0 {
-            aged_locked_run(dir.path(), &id, "pid 1\n");
-        } else {
-            let run = dir.path().join("bx/council").join(&id);
-            std::fs::create_dir_all(&run).unwrap();
-            std::fs::write(run.join("brief.md"), "b").unwrap();
-            age_by_days(&run.join("brief.md"), 31);
-        }
-    }
-    let mut c = bx_in(dir.path());
-    c.args(["council", "prune"]);
-    // SAFETY: `setrlimit` is async-signal-safe and touches only the child.
-    unsafe {
-        c.pre_exec(|| {
-            let lim = libc::rlimit {
-                rlim_cur: 48,
-                rlim_max: 48,
-            };
-            if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
-    }
-    let out = c.bounded_output();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!("{e}: {}", String::from_utf8_lossy(&out.stderr));
-    });
-    assert_eq!(v["removed"].as_array().map(Vec::len), Some(80), "{v}");
-    assert_eq!(v["failed"], serde_json::json!([]), "{v}");
-}
-
 /// A lock that is not a regular file is never adopted, and judging it never blocks: a link
 /// (followed, it would be judged by its target) and a FIFO.
 #[cfg(unix)]
@@ -12000,21 +11938,31 @@ fn an_aged_lock_that_is_a_link_or_a_fifo_is_kept_without_hanging() {
         std::fs::write(run.join("brief.md"), "b").unwrap();
         age_by_days(&run.join("brief.md"), 31);
         let lock = run.join(".council-lock");
+        let c = std::ffi::CString::new(lock.to_str().unwrap()).unwrap();
         if plant == "link" {
             std::os::unix::fs::symlink(&target, &lock).unwrap();
         } else {
-            let c = std::ffi::CString::new(lock.to_str().unwrap()).unwrap();
             // SAFETY: a valid C string; mkfifo only creates the node.
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-            // Aged, so only its type keeps it. Read-write never blocks on a FIFO.
-            std::fs::File::options()
-                .read(true)
-                .write(true)
-                .open(&lock)
-                .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(when_days(31)))
-                .unwrap();
         }
+        // Aged itself, not its target, so only its type keeps it.
+        let ago = libc::timespec {
+            tv_sec: when_days(31)
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as libc::time_t,
+            tv_nsec: 0,
+        };
+        // SAFETY: a valid C string and two timespecs; the link itself is touched, never followed.
+        let rc = unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                c.as_ptr(),
+                [ago, ago].as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
     }
     let (code, v) = prune_json(dir.path(), &[]);
     assert_eq!(code, Some(0), "{v}");

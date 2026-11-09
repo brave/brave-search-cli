@@ -677,18 +677,18 @@ fn an_oversized_body_is_detected_by_the_read_loop_and_flagged() {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .http_status_as_error(false)
+                .timeout_global(Some(Duration::from_secs(10)))
                 .build(),
         );
-        let url = format!("http://127.0.0.1:{port}/");
-        let r = get_raw(&agent, &url, &[], 4096, Duration::from_secs(10)).unwrap();
+        let r = get_raw(&agent, &format!("http://127.0.0.1:{port}/"), &[], 4096).unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(r.body.len(), want_body, "body of {len} against a 4096 cap");
         assert_eq!(r.oversized(), want_oversized, "body of {len}");
     }
 }
 
-/// A body dripped a byte at a time is cut off at `get_raw`'s own deadline, not the agent's: the
-/// agent here has none. What arrived is kept and flagged, since the status line was paid for.
+/// A body dripped a byte at a time is cut off at the agent's `timeout_global`. What arrived is
+/// kept and flagged, since the status line was paid for.
 #[test]
 fn a_dripped_get_body_is_cut_off_at_the_calls_own_deadline() {
     use std::io::Write as _;
@@ -717,11 +717,12 @@ fn a_dripped_get_body_is_cut_off_at_the_calls_own_deadline() {
     let agent = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
             .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(1)))
             .build(),
     );
     let started = std::time::Instant::now();
     let url = format!("http://127.0.0.1:{port}/");
-    let r = get_raw(&agent, &url, &[], 4096, Duration::from_secs(1)).unwrap();
+    let r = get_raw(&agent, &url, &[], 4096).unwrap();
     let took = started.elapsed();
     assert!(
         took < Duration::from_secs(3),

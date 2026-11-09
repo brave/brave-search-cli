@@ -385,16 +385,12 @@ pub fn check_base_url(w: &super::wire::Wire, url: &str) -> Result<String, String
     ))
 }
 
-/// The wire's `base_env`, when set: our own variable, never the vendor SDKs', which point other
-/// tools at routers and proxies.
-pub fn base_override(w: &super::wire::Wire) -> Option<String> {
-    std::env::var(w.base_env)
+/// Our own variables, never the vendor SDKs': those point other tools at routers and proxies.
+pub fn base_url(w: &super::wire::Wire) -> Result<String, String> {
+    match std::env::var(w.base_env)
         .ok()
         .and_then(crate::config::trim_non_empty)
-}
-
-pub fn base_url(w: &super::wire::Wire) -> Result<String, String> {
-    match base_override(w) {
+    {
         Some(u) => check_base_url(w, &u).map_err(|e| format!("{}: {e}", w.base_env)),
         None => Ok(w.host.to_string()),
     }

@@ -394,18 +394,16 @@ fn print_plan(a: &CouncilArgs, p: &Planned, out: Option<&std::path::Path>, brave
         return;
     }
     say!("task     {} ({})", t.name, t.source);
-    let zdr = cfg::zdr(c);
     for r in plan {
         let pinned = cfg::providers_for(c, &r.bare);
         say!(
-            "  {:<32} {:<11} {} effort={} max_tokens={}→{} retention={}{}",
+            "  {:<32} {:<11} {} effort={} max_tokens={}→{}{}",
             r.slug,
             r.wire.name,
             r.base,
             (r.wire.level)(t.effort),
             r.start_tokens,
             r.cap,
-            wire::retention_of(r.wire, zdr).mechanism,
             if pinned.is_empty() {
                 String::new()
             } else {
@@ -413,21 +411,20 @@ fn print_plan(a: &CouncilArgs, p: &Planned, out: Option<&std::path::Path>, brave
             }
         );
     }
+    let zdr = cfg::zdr(c);
+    let loose: Vec<&str> = plan
+        .iter()
+        .filter(|r| !wire::retention_of(r.wire, zdr).enforced_per_request)
+        .map(|r| r.slug.as_str())
+        .collect();
     if !zdr {
         say!("retention not requested — \"zdr\": false is set");
-    } else {
-        let loose: Vec<&str> = plan
-            .iter()
-            .filter(|r| !wire::retention_of(r.wire, zdr).enforced_per_request)
-            .map(|r| r.slug.as_str())
-            .collect();
-        if !loose.is_empty() {
-            say!(
-                "retention zero requested; not enforced per request for {} — their \
-                 organisation's settings decide",
-                loose.join(", ")
-            );
-        }
+    } else if !loose.is_empty() {
+        say!(
+            "retention zero requested; not enforced per request for {} — their organisation's \
+             settings decide",
+            loose.join(", ")
+        );
     }
     if let Some(d) = out {
         say!("writes   {}", util::sanitize(&d.display().to_string()));
@@ -681,7 +678,7 @@ fn execute(
         info.log_write_errors = info.log_write_errors.saturating_add(1);
         man = manifest(&info);
         // Kept: with no manifest, only the lock stops a later `--out` from replacing the replies.
-        held.disarm();
+        std::mem::forget(held);
         if a.format == "text" {
             note!("warning: {e} — the manifest follows on stderr\n{man}");
         } else {
@@ -739,98 +736,15 @@ fn holds_replies(dir: &std::path::Path) -> bool {
     })
 }
 
-/// Released however the run leaves, errors included. Its handle holds a file lock, which `prune`
-/// reads as liveness: the kernel drops it with the process, however that died.
-pub(super) struct OutLock {
-    /// `None` leaves the file in place.
-    path: Option<std::path::PathBuf>,
-    _held: Option<std::fs::File>,
-}
+/// Released however the run leaves, errors included. Only a run that died (`panic = "abort"`
+/// skips `Drop`) or lost its manifest leaves its lock for a human to judge. A run also holds a
+/// file lock through the handle, which `prune` reads as liveness.
+pub(super) struct OutLock(std::path::PathBuf, Option<std::fs::File>);
 
 impl Drop for OutLock {
     fn drop(&mut self) {
-        if let Some(p) = self.path.take() {
-            std::fs::remove_file(p).ok();
-        }
+        std::fs::remove_file(&self.0).ok();
     }
-}
-
-impl OutLock {
-    /// Leaves the file in place: a lost manifest's guard, or one that went with its directory.
-    pub(super) fn disarm(mut self) {
-        self.path = None;
-    }
-
-    /// Drops the lock but keeps the file: on some filesystems Windows cannot remove a directory
-    /// while a file in it is open.
-    #[cfg(windows)]
-    pub(super) fn released(mut self) -> Self {
-        self._held = None;
-        self
-    }
-}
-
-/// What `prune` found holding a run's lock.
-pub(super) enum Probe {
-    /// The run finished since prune looked.
-    Gone,
-    /// A live run, or a lock it cannot judge.
-    Held,
-    /// No run holds it and it is older than the window: taken, and left in place on drop.
-    Orphan(OutLock),
-}
-
-/// Judges an existing lock by its handle, so a file replaced since the open is never adopted.
-pub(super) fn orphan(dir: &std::path::Path, stale: Duration) -> Probe {
-    let path = dir.join(LOCK);
-    let mut o = std::fs::OpenOptions::new();
-    // Write: an exclusive lock needs it on NFS. Read-write also never blocks on a FIFO.
-    o.read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.custom_flags(libc::O_NOFOLLOW);
-    }
-    // `FILE_FLAG_OPEN_REPARSE_POINT`: a link is opened as itself, then refused as not a file.
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        o.custom_flags(0x0020_0000);
-    }
-    let f = match o.open(&path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Probe::Gone,
-        Err(_) => return Probe::Held,
-    };
-    let Ok(m) = f.metadata() else {
-        return Probe::Held;
-    };
-    // Any lock error keeps the run: a filesystem without locks reads as live.
-    if !m.is_file() || f.try_lock().is_err() {
-        return Probe::Held;
-    }
-    // Aged by the inode now held; a future time reads young.
-    let aged = f
-        .metadata()
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age > stale);
-    #[cfg(unix)]
-    let same = {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::symlink_metadata(&path).is_ok_and(|p| (p.dev(), p.ino()) == (m.dev(), m.ino()))
-    };
-    // Windows cannot compare handles on stable Rust; a swap in this window is not caught there.
-    #[cfg(not(unix))]
-    let same = true;
-    if !aged || !same {
-        return Probe::Held;
-    }
-    Probe::Orphan(OutLock {
-        path: None,
-        _held: Some(f),
-    })
 }
 
 /// Why a held lock refuses a run, or `None` when there is none. Names the file and what deleting
@@ -855,29 +769,49 @@ fn lock_refusal(path: &std::path::Path, dir: &std::path::Path) -> Option<String>
 pub(super) fn lock(dir: &std::path::Path) -> std::io::Result<OutLock> {
     let path = dir.join(LOCK);
     let mut o = std::fs::OpenOptions::new();
-    o.read(true).write(true).create_new(true);
+    o.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
     let mut f = o.open(&path)?;
-    // Blocking: `create_new` already excluded other runs, and a probing prune holds a fresh file
-    // only until it reads the age. A filesystem without locks still runs.
-    f.lock().ok();
-    // For a human; liveness is the lock.
-    f.write_all(format!("pid {} at {}\n", std::process::id(), util::iso8601_now()).as_bytes())
-        .ok();
-    Ok(OutLock {
-        path: Some(path),
-        _held: Some(f),
-    })
+    std::io::Write::write_all(
+        &mut f,
+        format!("pid {} at {}\n", std::process::id(), util::iso8601_now()).as_bytes(),
+    )
+    .ok();
+    Ok(OutLock(path, None))
+}
+
+/// Whether no run holds the lock at `path`; one that cannot be judged is held.
+pub(super) fn orphaned(path: &std::path::Path) -> bool {
+    let mut o = std::fs::OpenOptions::new();
+    // Write: an exclusive lock needs it on NFS.
+    o.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    o.open(path)
+        .is_ok_and(|f| f.metadata().is_ok_and(|m| m.is_file()) && f.try_lock().is_ok())
 }
 
 fn out_lock(dir: &std::path::Path) -> Result<OutLock, String> {
     let path = dir.join(LOCK);
     match lock(dir) {
-        Ok(l) => Ok(l),
+        // Held for the whole run: the kernel drops it with the process, however that died. A
+        // filesystem without locks still runs.
+        Ok(mut l) => {
+            l.1 = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .ok()
+                .filter(|f| f.lock().is_ok());
+            Ok(l)
+        }
         // `create_new` is the authority: it catches a run that took the lock after `plan` looked.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(lock_refusal(&path, dir)
             .unwrap_or_else(|| format!("another run holds {}", path.display()))),
@@ -916,27 +850,16 @@ pub(super) fn make_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-/// The `--out` leaf, created if absent. `check_out` returned it canonical, so a link anywhere in
-/// it was planted since and would carry every write through it: checked before creating
-/// anything, and again after.
+/// The `--out` leaf, created if absent, then re-checked: `check_out` returned it canonical, so a
+/// link anywhere in it was planted since and would carry every write through it.
 pub(super) fn out_dir(real: &std::path::Path) -> Result<(), String> {
-    let moved = || {
-        format!(
-            "--out {} now passes through a link or is no longer a directory; pass the directory \
-             it names",
-            real.display()
-        )
-    };
-    let linked = || {
-        real.ancestors()
-            .any(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
-    };
-    if linked() {
-        return Err(moved());
-    }
     make_private_dir(real).map_err(|e| format!("{}: {e}", real.display()))?;
-    if linked() || !std::fs::symlink_metadata(real).is_ok_and(|m| m.is_dir()) {
-        return Err(moved());
+    let link = |p: &std::path::Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_symlink());
+    if real.ancestors().any(link) || !std::fs::symlink_metadata(real).is_ok_and(|m| m.is_dir()) {
+        return Err(format!(
+            "--out {} changed since it was checked; pass the directory it names",
+            real.display()
+        ));
     }
     Ok(())
 }

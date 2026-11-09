@@ -7,8 +7,7 @@ pub struct Hidden {
     old: [Option<libc::sigaction>; 4],
 }
 
-/// No terminal to hide on: `hide` is always `None`. Not `Infallible`, which is `Copy`, so callers
-/// can drop the guard alike everywhere.
+/// No terminal to hide on: `hide` is always `None`.
 #[cfg(not(unix))]
 pub enum Hidden {}
 

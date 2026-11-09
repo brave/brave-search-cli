@@ -476,7 +476,7 @@ pub fn check_credit(base: &str, key: &str) -> Result<(), Refusal> {
     let agent = crate::api::agent(PREFLIGHT_SECS);
     let url = format!("{base}/api/v1/key");
     let headers = [("Authorization", format!("Bearer {key}"))];
-    let Ok(r) = crate::api::get_raw(&agent, &url, &headers, 64 * 1024, PREFLIGHT) else {
+    let Ok(r) = crate::api::get_raw(&agent, &url, &headers, 64 * 1024) else {
         return Ok(());
     };
     match r.status {
@@ -500,7 +500,6 @@ pub fn check_credit(base: &str, key: &str) -> Result<(), Refusal> {
 
 /// Bound on each free pre-flight GET.
 const PREFLIGHT_SECS: u64 = 15;
-const PREFLIGHT: Duration = Duration::from_secs(PREFLIGHT_SECS);
 
 /// A refusal from `plan`, with the exit code a member meeting the same fault mid-run gets.
 pub struct Refusal {
@@ -770,7 +769,7 @@ fn roster(
     zdr_only: bool,
 ) -> Result<Vec<Served>, Option<u16>> {
     let url = format!("{base}{path}{}", if zdr_only { "?zdr=true" } else { "" });
-    let r = crate::api::get_raw(agent, &url, headers, 8 << 20, PREFLIGHT).map_err(|_| None)?;
+    let r = crate::api::get_raw(agent, &url, headers, 8 << 20).map_err(|_| None)?;
     // A non-200 is not a roster, whatever `data` its error body carries.
     if r.status != 200 {
         return Err(Some(r.status));
@@ -795,7 +794,7 @@ fn model_lookup(
 ) -> Result<Option<Served>, Option<u16>> {
     let path = w.models.split('?').next().unwrap_or(w.models);
     let url = format!("{base}{path}/{id}");
-    let r = crate::api::get_raw(agent, &url, headers, 1 << 20, PREFLIGHT).map_err(|_| None)?;
+    let r = crate::api::get_raw(agent, &url, headers, 1 << 20).map_err(|_| None)?;
     match r.status {
         200 => Ok(crate::query::parse_json_slice(&r.body)
             .ok()

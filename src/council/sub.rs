@@ -770,8 +770,8 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
         // So a partial failure can say what it destroyed.
         let before = entry_names(&dir);
         // Every run holds this lock while it writes, so taking it excludes a writer until the
-        // removal. An existing one is a dead run's only when nobody holds it and it is older
-        // than the window (none outlives `MAX_SECONDS`). `--dry-run` only looks: creating the
+        // removal. A lock older than the window is a dead run's (none outlives `MAX_SECONDS`)
+        // unless a run still holds it: the clock can jump. `--dry-run` only looks: creating the
         // lock moves a brief-less run's age.
         let lock = dir.join(super::run::LOCK);
         let taken = if a.dry_run {
@@ -785,15 +785,16 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
         };
         let held = match taken {
             Ok(l) => l,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AlreadyExists
+                    && std::fs::symlink_metadata(&lock).is_ok_and(aged)
+                    && super::run::orphaned(&lock) =>
+            {
+                None
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                match super::run::orphan(&dir, PRUNE_AFTER) {
-                    super::run::Probe::Orphan(l) => Some(l),
-                    super::run::Probe::Gone => continue,
-                    super::run::Probe::Held => {
-                        locked.push(id);
-                        continue;
-                    }
-                }
+                locked.push(id);
+                continue;
             }
             Err(e) => {
                 failed.push(util::sanitize(&format!("{}: {e}", lock.display())));
@@ -812,14 +813,10 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
             removed.push((id, bytes));
             continue;
         }
-        #[cfg(windows)]
-        let held = held.map(super::run::OutLock::released);
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => {
                 // The lock went with the directory; dropping it would unlink one a new run made.
-                if let Some(h) = held {
-                    h.disarm();
-                }
+                std::mem::forget(held);
                 removed.push((id, bytes));
             }
             // `remove_dir_all` stops at the first entry it cannot unlink, after destroying the
@@ -1040,51 +1037,48 @@ fn set_key(a: &CouncilArgs) -> Result<i32, String> {
 
     let c = cfg::load(None)?;
     note!("Keys are saved to {where_to}, readable only by you.");
+    // One guard for the whole walk: re-hiding per prompt could drop a paste meant for the next.
+    let hidden = crate::tty::hide();
+    if hidden.is_none() {
+        note!("(input is visible — to avoid it, export the env var instead)");
+    }
+
     let mut accepted: Vec<(&str, String)> = Vec::new();
     let mut bad = false;
-    // One guard for the whole walk: re-hiding per prompt could drop a paste meant for the next.
-    // Echo is back when it leaves this block.
-    {
-        let hidden = crate::tty::hide();
-        if hidden.is_none() {
-            note!("(input is visible — to avoid it, export the env var instead)");
+    for (name, url) in signup().filter(|(n, _)| only.is_none_or(|o| o == *n)) {
+        note!(
+            "\n{name} — {} · {url}",
+            if cfg::key_for(&c, name).is_some() {
+                "already set"
+            } else {
+                env_of(name)
+            }
+        );
+        std::io::stderr()
+            .write_all(b"  paste key (blank to skip): ")
+            .ok();
+        std::io::stderr().flush().ok();
+        let mut line = String::new();
+        // Ends the walk, but the keys already accepted are still saved.
+        if let Err(e) = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
+            note!("  not read: {e}");
+            bad = true;
+            break;
         }
-        for (name, url) in signup().filter(|(n, _)| only.is_none_or(|o| o == *n)) {
-            note!(
-                "\n{name} — {} · {url}",
-                if cfg::key_for(&c, name).is_some() {
-                    "already set"
-                } else {
-                    env_of(name)
-                }
-            );
-            std::io::stderr()
-                .write_all(b"  paste key (blank to skip): ")
-                .ok();
-            std::io::stderr().flush().ok();
-            let mut line = String::new();
-            let read = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
-            if hidden.is_some() {
-                note!("");
-            }
-            // Ends the walk, but the keys already accepted are still saved.
-            if let Err(e) = read {
-                note!("  not read: {e}");
-                bad = true;
-                break;
-            }
-            let key = line.trim().to_string();
-            if key.is_empty() {
-                continue;
-            }
-            // Reported, not fatal, so the keys already entered survive.
-            if let Err(e) = cfg::check_key(name, &key) {
-                note!("  not saved: {e}");
-                bad = true;
-                continue;
-            }
-            accepted.push((name, key));
+        if hidden.is_some() {
+            note!("");
         }
+        let key = line.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        // Reported, not fatal, so the keys already entered survive.
+        if let Err(e) = cfg::check_key(name, &key) {
+            note!("  not saved: {e}");
+            bad = true;
+            continue;
+        }
+        accepted.push((name, key));
     }
 
     // An empty pipe to `--via` is a failure; at a prompt, blank means "never mind".
@@ -1229,13 +1223,11 @@ fn doctor(a: &CouncilArgs, brave_key: &str) -> Result<i32, String> {
     }
     // Where each wire's key goes. A refused override fails only a transport the panel uses, as
     // a malformed key does.
-    let endpoints: Vec<(&wire::Wire, bool, Result<String, String>)> = wire::TABLE
-        .iter()
-        .map(|w| (*w, cfg::base_override(w).is_some(), cfg::base_url(w)))
-        .collect();
+    let endpoints: Vec<(&wire::Wire, Result<String, String>)> =
+        wire::TABLE.iter().map(|w| (*w, cfg::base_url(w))).collect();
     let bad_endpoint = endpoints
         .iter()
-        .any(|(w, _, b)| b.is_err() && members.iter().any(|m| m.1 == w.name));
+        .any(|(w, b)| b.is_err() && members.iter().any(|m| m.1 == w.name));
     // Judged against the panel that would run, not a count of keys.
     let short = brave_bad
         || !missing.is_empty()
@@ -1275,10 +1267,10 @@ fn doctor(a: &CouncilArgs, brave_key: &str) -> Result<i32, String> {
                     "also": cfg::panel_aliases_for(n),
                     "members": m.iter().map(|s| util::sanitize(s)).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-                "endpoints": endpoints.iter().map(|(w, overridden, b)| serde_json::json!({
+                "endpoints": endpoints.iter().map(|(w, b)| serde_json::json!({
                     "transport": w.name,
                     "env": w.base_env,
-                    "overridden": overridden,
+                    "overridden": b.as_deref() != Ok(w.host),
                     "base": b.as_deref().ok().map(util::sanitize),
                     "error": b.as_ref().err().map(|e| util::sanitize(e)),
                 })).collect::<Vec<_>>(),
@@ -1343,8 +1335,9 @@ fn doctor(a: &CouncilArgs, brave_key: &str) -> Result<i32, String> {
             " (Brave's list price — set brave_price_per_call_usd for your plan)"
         }
     );
-    for (w, _, b) in endpoints.iter().filter(|(_, o, _)| *o) {
+    for (w, b) in &endpoints {
         match b {
+            Ok(base) if base == w.host => {}
             Ok(base) => say!("  endpoint    {} → {base} ({})", w.name, w.base_env),
             Err(e) => say!("  endpoint    {e}"),
         }

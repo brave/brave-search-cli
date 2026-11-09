@@ -535,15 +535,14 @@ pub fn is_retryable(e: &ureq::Error) -> bool {
     }
 }
 
-/// GETs with `recv` as the deadline for the whole call, as `post_raw` does.
+/// Bounded as a whole, a dripping body included, by the agent's `timeout_global`.
 pub fn get_raw(
     agent: &ureq::Agent,
     url: &str,
     headers: &[(&str, String)],
     limit: u64,
-    recv: Duration,
 ) -> Result<Resp, ureq::Error> {
-    let mut req = agent.get(url).config().timeout_global(Some(recv)).build();
+    let mut req = agent.get(url);
     for (k, v) in headers {
         req = req.header(*k, v);
     }
