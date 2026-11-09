@@ -319,14 +319,16 @@ fn a_signal_at_the_prompt_restores_echo_and_still_kills() {
         let dir = tempfile::tempdir().unwrap();
         let pty = Pty::new();
         let mut c = prompt(&pty, &dir.path().join("c.json"));
-        // SAFETY: async-signal-safe; no core file from SIGQUIT or SIGABRT.
+        // SAFETY: async-signal-safe. No core file from SIGQUIT or SIGABRT, and the default
+        // action even under a parent that ignores `sig`, as a background job's does.
         unsafe {
-            c.pre_exec(|| {
+            c.pre_exec(move || {
                 let none = libc::rlimit {
                     rlim_cur: 0,
                     rlim_max: 0,
                 };
                 libc::setrlimit(libc::RLIMIT_CORE, &none);
+                libc::signal(sig, libc::SIG_DFL);
                 Ok(())
             });
         }
