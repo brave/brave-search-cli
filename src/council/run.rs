@@ -681,7 +681,7 @@ fn execute(
         info.log_write_errors = info.log_write_errors.saturating_add(1);
         man = manifest(&info);
         // Kept: with no manifest, only the lock stops a later `--out` from replacing the replies.
-        std::mem::forget(held);
+        held.disarm();
         if a.format == "text" {
             note!("warning: {e} — the manifest follows on stderr\n{man}");
         } else {
@@ -739,14 +739,98 @@ fn holds_replies(dir: &std::path::Path) -> bool {
     })
 }
 
-/// Released however the run leaves, errors included. Only a run that died (`panic = "abort"`
-/// skips `Drop`) or lost its manifest leaves its lock for a human to judge.
-pub(super) struct OutLock(std::path::PathBuf);
+/// Released however the run leaves, errors included. Its handle holds a file lock, which `prune`
+/// reads as liveness: the kernel drops it with the process, however that died.
+pub(super) struct OutLock {
+    /// `None` leaves the file in place.
+    path: Option<std::path::PathBuf>,
+    _held: Option<std::fs::File>,
+}
 
 impl Drop for OutLock {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.0).ok();
+        if let Some(p) = self.path.take() {
+            std::fs::remove_file(p).ok();
+        }
     }
+}
+
+impl OutLock {
+    /// Leaves the file in place: a lost manifest's guard, or one that went with its directory.
+    pub(super) fn disarm(mut self) {
+        self.path = None;
+    }
+
+    /// Drops the lock but keeps the file: on some filesystems Windows cannot remove a directory
+    /// while a file in it is open.
+    #[cfg(windows)]
+    pub(super) fn released(mut self) -> Self {
+        self._held = None;
+        self
+    }
+}
+
+/// What `prune` found holding a run's lock.
+pub(super) enum Probe {
+    /// The run finished since prune looked.
+    Gone,
+    /// A live run, or a lock it cannot judge.
+    Held,
+    /// No run holds it and it is older than the window: taken, and left in place on drop.
+    Orphan(OutLock),
+}
+
+/// Judges an existing lock by its handle, so a file replaced since the open is never adopted.
+pub(super) fn orphan(dir: &std::path::Path, stale: Duration) -> Probe {
+    let path = dir.join(LOCK);
+    let mut o = std::fs::OpenOptions::new();
+    // Write: an exclusive lock needs it on NFS. Read-write also never blocks on a FIFO.
+    o.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    // `FILE_FLAG_OPEN_REPARSE_POINT`: a link is opened as itself, then refused as not a file.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        o.custom_flags(0x0020_0000);
+    }
+    let f = match o.open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Probe::Gone,
+        Err(_) => return Probe::Held,
+    };
+    let Ok(m) = f.metadata() else {
+        return Probe::Held;
+    };
+    // Any lock error keeps the run: a filesystem without locks reads as live.
+    if !m.is_file() || f.try_lock().is_err() {
+        return Probe::Held;
+    }
+    // Aged by the inode now held; a future time reads young.
+    let aged = f
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > stale);
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(&path).is_ok_and(|p| (p.dev(), p.ino()) == (m.dev(), m.ino()))
+    };
+    // Windows cannot compare handles on stable Rust; a swap in this window is not caught there.
+    #[cfg(not(unix))]
+    let same = true;
+    if !aged || !same {
+        return Probe::Held;
+    }
+    Probe::Orphan(OutLock {
+        path: None,
+        _held: Some(f),
+    })
 }
 
 /// Why a held lock refuses a run, or `None` when there is none. Names the file and what deleting
@@ -771,19 +855,23 @@ fn lock_refusal(path: &std::path::Path, dir: &std::path::Path) -> Option<String>
 pub(super) fn lock(dir: &std::path::Path) -> std::io::Result<OutLock> {
     let path = dir.join(LOCK);
     let mut o = std::fs::OpenOptions::new();
-    o.write(true).create_new(true);
+    o.read(true).write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
     let mut f = o.open(&path)?;
-    std::io::Write::write_all(
-        &mut f,
-        format!("pid {} at {}\n", std::process::id(), util::iso8601_now()).as_bytes(),
-    )
-    .ok();
-    Ok(OutLock(path))
+    // Blocking: `create_new` already excluded other runs, and a probing prune holds a fresh file
+    // only until it reads the age. A filesystem without locks still runs.
+    f.lock().ok();
+    // For a human; liveness is the lock.
+    f.write_all(format!("pid {} at {}\n", std::process::id(), util::iso8601_now()).as_bytes())
+        .ok();
+    Ok(OutLock {
+        path: Some(path),
+        _held: Some(f),
+    })
 }
 
 fn out_lock(dir: &std::path::Path) -> Result<OutLock, String> {

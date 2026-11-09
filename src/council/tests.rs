@@ -6498,3 +6498,41 @@ fn every_wire_names_its_own_key_and_no_two_share_one() {
         }
     }
 }
+
+/// Liveness is the file lock, not the pid in the file: a held lock keeps the run, and a lock is
+/// only taken once nobody holds it and its own inode is older than the window. Runs everywhere,
+/// so Windows' `LockFileEx` is covered too.
+#[test]
+fn orphan_takes_only_an_aged_lock_nobody_holds() {
+    use super::run::{LOCK, Probe, orphan};
+    let tmp = tempfile::tempdir().unwrap();
+    let lock = tmp.path().join(LOCK);
+    let window = std::time::Duration::from_secs(60);
+    assert!(matches!(orphan(tmp.path(), window), Probe::Gone));
+
+    std::fs::write(&lock, "pid 1\n").unwrap();
+    assert!(
+        matches!(orphan(tmp.path(), window), Probe::Held),
+        "a fresh lock is a run starting"
+    );
+    let aged = std::time::SystemTime::now() - 2 * window;
+    let holder = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    holder
+        .set_times(std::fs::FileTimes::new().set_modified(aged))
+        .unwrap();
+    holder.try_lock().unwrap();
+    assert!(
+        matches!(orphan(tmp.path(), window), Probe::Held),
+        "held by a live run"
+    );
+    drop(holder);
+    let Probe::Orphan(guard) = orphan(tmp.path(), window) else {
+        panic!("an aged lock nobody holds was not taken");
+    };
+    drop(guard);
+    assert!(lock.exists(), "an adopted lock is left in place");
+}

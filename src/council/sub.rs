@@ -770,9 +770,9 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
         // So a partial failure can say what it destroyed.
         let before = entry_names(&dir);
         // Every run holds this lock while it writes, so taking it excludes a writer until the
-        // removal. A lock older than the window is a dead run's (none outlives `MAX_SECONDS`)
-        // unless its pid lives: the clock can jump. `--dry-run` only looks: creating the lock
-        // moves a brief-less run's age.
+        // removal. An existing one is a dead run's only when nobody holds it and it is older
+        // than the window (none outlives `MAX_SECONDS`). `--dry-run` only looks: creating the
+        // lock moves a brief-less run's age.
         let lock = dir.join(super::run::LOCK);
         let taken = if a.dry_run {
             match std::fs::symlink_metadata(&lock) {
@@ -785,16 +785,15 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
         };
         let held = match taken {
             Ok(l) => l,
-            Err(e)
-                if e.kind() == std::io::ErrorKind::AlreadyExists
-                    && std::fs::symlink_metadata(&lock).is_ok_and(aged)
-                    && !writer_alive(&lock) =>
-            {
-                None
-            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                locked.push(id);
-                continue;
+                match super::run::orphan(&dir, PRUNE_AFTER) {
+                    super::run::Probe::Orphan(l) => Some(l),
+                    super::run::Probe::Gone => continue,
+                    super::run::Probe::Held => {
+                        locked.push(id);
+                        continue;
+                    }
+                }
             }
             Err(e) => {
                 failed.push(util::sanitize(&format!("{}: {e}", lock.display())));
@@ -813,10 +812,14 @@ fn prune(a: &CouncilArgs) -> Result<i32, String> {
             removed.push((id, bytes));
             continue;
         }
+        #[cfg(windows)]
+        let held = held.map(super::run::OutLock::released);
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => {
                 // The lock went with the directory; dropping it would unlink one a new run made.
-                std::mem::forget(held);
+                if let Some(h) = held {
+                    h.disarm();
+                }
                 removed.push((id, bytes));
             }
             // `remove_dir_all` stops at the first entry it cannot unlink, after destroying the
@@ -930,26 +933,6 @@ fn stale_rosters(dir: &std::path::Path, dry_run: bool) -> u64 {
         }
     }
     bytes
-}
-
-/// Whether the pid a lock names still runs. A reused pid keeps the run, the safe side.
-fn writer_alive(lock: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    if let Some(pid) = util::read_artifact(lock, 256).ok().and_then(|s| {
-        s.strip_prefix("pid ")?
-            .split_whitespace()
-            .next()?
-            .parse::<libc::pid_t>()
-            .ok()
-            .filter(|p| *p > 0)
-    }) {
-        // SAFETY: signal 0 sends nothing; it only asks whether `pid` exists.
-        return unsafe { libc::kill(pid, 0) } == 0
-            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-    }
-    #[cfg(not(unix))]
-    let _ = lock;
-    false
 }
 
 /// What a run holds, one level deep, so a failed removal can say what it destroyed. Raw names, so

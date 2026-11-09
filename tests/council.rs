@@ -11814,35 +11814,212 @@ fn prune_never_removes_a_run_that_holds_its_lock() {
 #[cfg(unix)]
 const DEAD_PID_LOCK: &str = "pid 2147483647 at 2026-01-01T00:00:00Z\n";
 
-/// A clock that jumps ages a live run's lock; the pid it names still decides.
+/// An aged run with an aged lock, as a clock jump or a crash leaves it.
 #[cfg(unix)]
-#[test]
-fn prune_keeps_a_run_whose_aged_lock_names_a_live_pid() {
-    let dir = TempDir::new().unwrap();
-    let run = dir.path().join("bx/council/20260101-120000-aaaaaa");
+fn aged_locked_run(state: &std::path::Path, id: &str, lock: &str) -> std::path::PathBuf {
+    let run = state.join("bx/council").join(id);
     std::fs::create_dir_all(&run).unwrap();
     std::fs::write(run.join("brief.md"), "b").unwrap();
     age_by_days(&run.join("brief.md"), 31);
-    let lock = run.join(".council-lock");
-    std::fs::write(
-        &lock,
-        format!("pid {} at 2026-01-01T00:00:00Z\n", std::process::id()),
-    )
-    .unwrap();
-    age_by_days(&lock, 31);
+    std::fs::write(run.join(".council-lock"), lock).unwrap();
+    age_by_days(&run.join(".council-lock"), 31);
+    run
+}
+
+/// A clock that jumps ages a live run's lock; the lock the run still holds decides. Released,
+/// the same run is removed.
+#[cfg(unix)]
+#[test]
+fn prune_keeps_a_run_whose_aged_lock_is_still_held() {
+    let dir = TempDir::new().unwrap();
+    let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", "pid 1\n");
+    let holder = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(run.join(".council-lock"))
+        .unwrap();
+    holder.try_lock().unwrap();
     for extra in [&["--dry-run"][..], &[]] {
         let (code, v) = prune_json(dir.path(), extra);
         assert_eq!(code, Some(0), "{v}");
         assert_eq!(
             v["locked"],
-            serde_json::json!([run.file_name().unwrap().to_str()]),
+            serde_json::json!(["20260101-120000-aaaaaa"]),
             "{v}"
         );
-        assert!(
-            run.join("brief.md").exists(),
-            "{extra:?} removed a live run: {v}"
-        );
+        assert!(run.exists(), "{extra:?} removed a live run: {v}");
     }
+    drop(holder);
+    let (_, v) = prune_json(dir.path(), &[]);
+    assert!(!run.exists(), "a released lock still kept the run: {v}");
+}
+
+/// The pid in a lock is not liveness: a crashed run's pid may name a live process since. Ours is
+/// always live, and the run still goes.
+#[cfg(unix)]
+#[test]
+fn an_aged_unheld_lock_naming_a_live_pid_is_pruned() {
+    let dir = TempDir::new().unwrap();
+    let lock = format!("pid {} at 2026-01-01T00:00:00Z\n", std::process::id());
+    let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", &lock);
+    let (code, v) = prune_json(dir.path(), &[]);
+    assert_eq!(code, Some(0), "{v}");
+    assert!(!run.exists(), "a reused pid kept a dead run: {v}");
+}
+
+/// Only a real writer proves it holds its lock for the whole run, and that the kernel drops it
+/// however the run dies.
+#[cfg(unix)]
+#[test]
+fn a_crashed_writer_releases_its_lock() {
+    let port = drip_server(std::time::Duration::ZERO);
+    let dir = TempDir::new().unwrap();
+    let mut child = bx("openrouter", port, dir.path())
+        .args(["council", "SUBJECT", "--via", "openrouter", "-m", "a/one"])
+        .args(["--max-seconds", "120", "--progress", "false"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let root = dir.path().join("bx/council");
+    let started = std::time::Instant::now();
+    let run = loop {
+        let found = std::fs::read_dir(&root).ok().and_then(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .find(|p| p.join(".council-lock").exists() && p.join("brief.md").exists())
+        });
+        if let Some(run) = found {
+            break run;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "no run started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    age_by_days(&run.join("brief.md"), 31);
+    age_by_days(&run.join(".council-lock"), 31);
+    let id = run.file_name().unwrap().to_str().unwrap().to_string();
+    let (_, v) = prune_json(dir.path(), &[]);
+    assert_eq!(
+        v["locked"],
+        serde_json::json!([id]),
+        "a live writer's run: {v}"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let (_, v) = prune_json(dir.path(), &[]);
+    assert_eq!(
+        v["locked"],
+        serde_json::json!([]),
+        "a dead writer's lock still held: {v}"
+    );
+}
+
+/// An adopted lock on a run kept for its paid output stays: with no manifest, only the lock
+/// stops a later `--out` from replacing the replies.
+#[cfg(unix)]
+#[test]
+fn an_adopted_lock_on_a_kept_run_is_left_in_place() {
+    let dir = TempDir::new().unwrap();
+    let run = aged_locked_run(dir.path(), "20260101-120000-aaaaaa", "pid 1\n");
+    std::fs::write(run.join("00-a_one.md"), "## A. X\npaid text\n").unwrap();
+    let (_, v) = prune_json(dir.path(), &[]);
+    assert_eq!(
+        v["kept_unfinished"][0]["run"], "20260101-120000-aaaaaa",
+        "{v}"
+    );
+    assert!(
+        run.join(".council-lock").exists(),
+        "the guard was removed: {v}"
+    );
+}
+
+/// Each removed run's lock handle is closed, so a prune of many runs never runs out of
+/// descriptors, whether it took the lock or adopted one.
+#[cfg(unix)]
+#[test]
+fn prune_removes_more_runs_than_the_descriptor_limit() {
+    use std::os::unix::process::CommandExt;
+    let dir = TempDir::new().unwrap();
+    for i in 0..80 {
+        let id = format!("20260101-1200{:02}-{i:06x}", i % 60);
+        if i % 2 == 0 {
+            aged_locked_run(dir.path(), &id, "pid 1\n");
+        } else {
+            let run = dir.path().join("bx/council").join(&id);
+            std::fs::create_dir_all(&run).unwrap();
+            std::fs::write(run.join("brief.md"), "b").unwrap();
+            age_by_days(&run.join("brief.md"), 31);
+        }
+    }
+    let mut c = bx_in(dir.path());
+    c.args(["council", "prune"]);
+    // SAFETY: `setrlimit` is async-signal-safe and touches only the child.
+    unsafe {
+        c.pre_exec(|| {
+            let lim = libc::rlimit {
+                rlim_cur: 48,
+                rlim_max: 48,
+            };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let out = c.bounded_output();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!("{e}: {}", String::from_utf8_lossy(&out.stderr));
+    });
+    assert_eq!(v["removed"].as_array().map(Vec::len), Some(80), "{v}");
+    assert_eq!(v["failed"], serde_json::json!([]), "{v}");
+}
+
+/// A lock that is not a regular file is never adopted, and judging it never blocks: a link
+/// (followed, it would be judged by its target) and a FIFO.
+#[cfg(unix)]
+#[test]
+fn an_aged_lock_that_is_a_link_or_a_fifo_is_kept_without_hanging() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("elsewhere");
+    std::fs::write(&target, "pid 1\n").unwrap();
+    age_by_days(&target, 31);
+    for (id, plant) in [
+        ("20260101-120000-aaaaaa", "link"),
+        ("20260101-120001-bbbbbb", "fifo"),
+    ] {
+        let run = dir.path().join("bx/council").join(id);
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("brief.md"), "b").unwrap();
+        age_by_days(&run.join("brief.md"), 31);
+        let lock = run.join(".council-lock");
+        if plant == "link" {
+            std::os::unix::fs::symlink(&target, &lock).unwrap();
+        } else {
+            let c = std::ffi::CString::new(lock.to_str().unwrap()).unwrap();
+            // SAFETY: a valid C string; mkfifo only creates the node.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            // Aged, so only its type keeps it. Read-write never blocks on a FIFO.
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(&lock)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(when_days(31)))
+                .unwrap();
+        }
+    }
+    let (code, v) = prune_json(dir.path(), &[]);
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(
+        v["locked"],
+        serde_json::json!(["20260101-120000-aaaaaa", "20260101-120001-bbbbbb"]),
+        "{v}"
+    );
 }
 
 /// By lstat, never by content: anything but a regular file keeps an old run's reply.
