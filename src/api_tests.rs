@@ -5,16 +5,17 @@ use std::io::Cursor;
 
 // ── agent configuration ──────────────────────────────────────────
 
-/// `recv_response`, `global` and `per_call` would each cap a stream however much data flows.
+/// `recv_body`, `global` and `per_call` would each cap a stream however much data flows.
 #[test]
 fn streaming_agent_has_no_total_deadline() {
-    let timeouts = streaming_agent(30, 300).config().timeouts();
+    let agent = streaming_agent(30, 300);
+    let timeouts = agent.config().timeouts();
 
-    assert_eq!(timeouts.recv_response, None, "would cap the whole stream");
+    assert_eq!(timeouts.recv_body, None, "would cap the whole stream");
     assert_eq!(timeouts.global, None, "would cap the whole stream");
     assert_eq!(timeouts.per_call, None, "would cap the whole stream");
     assert_eq!(
-        timeouts.recv_body,
+        agent.config().timeout_per_read(),
         Some(Duration::from_secs(300)),
         "bounds silence between reads"
     );
@@ -28,16 +29,18 @@ fn streaming_agent_keeps_the_research_budget_off_the_dial_phases() {
     let dial = Some(Duration::from_secs(30));
 
     assert_eq!(timeouts.resolve, dial);
+    // The rustls handshake runs under `connect`.
     assert_eq!(timeouts.connect, dial);
-    // The header wait inherits these two, and the rustls handshake runs under `send_request`.
     assert_eq!(timeouts.send_request, dial);
     assert_eq!(timeouts.send_body, dial);
+    assert_eq!(timeouts.recv_response, dial);
 }
 
 /// An explicit `--timeout` reaches every phase.
 #[test]
 fn streaming_agent_passes_an_explicit_timeout_to_every_phase() {
-    let timeouts = streaming_agent(7, 7).config().timeouts();
+    let agent = streaming_agent(7, 7);
+    let timeouts = agent.config().timeouts();
     let t = Some(Duration::from_secs(7));
 
     for got in [
@@ -45,7 +48,8 @@ fn streaming_agent_passes_an_explicit_timeout_to_every_phase() {
         timeouts.connect,
         timeouts.send_request,
         timeouts.send_body,
-        timeouts.recv_body,
+        timeouts.recv_response,
+        agent.config().timeout_per_read(),
     ] {
         assert_eq!(got, t);
     }
@@ -343,6 +347,8 @@ fn is_timeout_accepts_every_phase() {
         ureq::Timeout::SendBody,
         ureq::Timeout::RecvResponse,
         ureq::Timeout::RecvBody,
+        ureq::Timeout::PerRead,
+        ureq::Timeout::PerWrite,
     ] {
         assert!(
             is_timeout(&io::Error::other(ureq::Error::Timeout(phase))),
@@ -671,12 +677,60 @@ fn an_oversized_body_is_detected_by_the_read_loop_and_flagged() {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .http_status_as_error(false)
-                .timeout_global(Some(Duration::from_secs(10)))
                 .build(),
         );
-        let r = get_raw(&agent, &format!("http://127.0.0.1:{port}/"), &[], 4096).unwrap();
+        let url = format!("http://127.0.0.1:{port}/");
+        let r = get_raw(&agent, &url, &[], 4096, Duration::from_secs(10)).unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(r.body.len(), want_body, "body of {len} against a 4096 cap");
         assert_eq!(r.oversized(), want_oversized, "body of {len}");
     }
+}
+
+/// A body dripped a byte at a time is cut off at `get_raw`'s own deadline, not the agent's: the
+/// agent here has none. What arrived is kept and flagged, since the status line was paid for.
+#[test]
+fn a_dripped_get_body_is_cut_off_at_the_calls_own_deadline() {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Some(mut sock) = listener.incoming().flatten().next() else {
+            return;
+        };
+        let mut r = BufReader::new(sock.try_clone().unwrap());
+        let mut line = String::new();
+        while r.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+            line.clear();
+        }
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+        // Ends on its own, so a regression fails on the elapsed time instead of hanging.
+        for _ in 0..50 {
+            if sock.write_all(b"x").is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let agent = ureq::Agent::new_with_config(
+        ureq::config::Config::builder()
+            .http_status_as_error(false)
+            .build(),
+    );
+    let started = std::time::Instant::now();
+    let url = format!("http://127.0.0.1:{port}/");
+    let r = get_raw(&agent, &url, &[], 4096, Duration::from_secs(1)).unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(3),
+        "the drip outlived the deadline: {took:?}"
+    );
+    assert_eq!(r.status, 200);
+    assert!(
+        r.truncated() && !r.body.is_empty(),
+        "{} bytes",
+        r.body.len()
+    );
 }

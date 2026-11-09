@@ -1,6 +1,5 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::time::Duration;
-use std::time::Instant;
 
 const USER_AGENT: &str = concat!("bx/", env!("CARGO_PKG_VERSION"));
 
@@ -60,12 +59,8 @@ pub(crate) fn agent(timeout_secs: u64) -> ureq::Agent {
 
 /// Agent for SSE streaming: no total deadline, since research responses run for minutes.
 ///
-/// `timeout_recv_response` must stay unset: ureq 3.4.0 also applies it to the body, capping the
-/// stream. `timeout_recv_body` is re-armed per read, so it bounds silence; ureq 3.4.1 (#1194)
-/// makes it a total budget, hence the exact pin in Cargo.toml, guarded by
-/// `stream_outlives_the_timeout_while_chunks_keep_arriving`.
-///
-/// `dial_secs` bounds everything before the first body byte; `read_secs` bounds silence after.
+/// `dial_secs` bounds each phase up to the response head; `read_secs` bounds silence, re-armed per
+/// read. `recv_body`, `global` and `per_call` stay unset: each is a total budget.
 fn streaming_agent(dial_secs: u64, read_secs: u64) -> ureq::Agent {
     let dial = Some(Duration::from_secs(dial_secs));
     ureq::Agent::new_with_config(
@@ -76,7 +71,8 @@ fn streaming_agent(dial_secs: u64, read_secs: u64) -> ureq::Agent {
             .timeout_connect(dial)
             .timeout_send_request(dial)
             .timeout_send_body(dial)
-            .timeout_recv_body(Some(Duration::from_secs(read_secs)))
+            .timeout_recv_response(dial)
+            .timeout_per_read(Some(Duration::from_secs(read_secs)))
             .user_agent(USER_AGENT)
             .build(),
     )
@@ -393,9 +389,7 @@ pub fn post_json_stream(
                 std::process::exit(1);
             }
         }
-        // With `timeout_recv_response` unset the header wait inherits the send deadline, so ureq
-        // reports a sent-but-unanswered request as `SendRequest`.
-        Err(ureq::Error::Timeout(ureq::Timeout::SendRequest)) => {
+        Err(ureq::Error::Timeout(ureq::Timeout::RecvResponse)) => {
             eprintln!("error: no response headers within {dial_timeout}s");
             std::process::exit(5);
         }
@@ -464,29 +458,10 @@ impl Resp {
     }
 }
 
-/// A reader that fails once a deadline passes.
-///
-/// No ureq timeout, `timeout_global` included, bounds a slowly dripped body: an expired deadline
-/// is re-armed as a one-second timeout per read. Wrapping ureq's reader keeps its framing and
-/// size limit, and `read_to_end`'s `Interrupted` retries.
-struct Until<R> {
-    inner: R,
-    at: Instant,
-}
-
-impl<R: Read> Read for Until<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if Instant::now() >= self.at {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "budget elapsed"));
-        }
-        self.inner.read(buf)
-    }
-}
-
 /// Reads a response whole. **A failed body read is not an error here**: the status line arrived,
 /// so the generation is paid for, and an `Err` would let `is_retryable` re-send it. An empty body
 /// inherits the status's classification instead (`Fatal` on a 200, retryable on a 5xx).
-fn read_resp(resp: ureq::http::Response<ureq::Body>, limit: u64, deadline: Instant) -> Resp {
+fn read_resp(resp: ureq::http::Response<ureq::Body>, limit: u64) -> Resp {
     let status = resp.status().as_u16();
     let retry_after = resp
         .headers()
@@ -495,12 +470,13 @@ fn read_resp(resp: ureq::http::Response<ureq::Body>, limit: u64, deadline: Insta
         .map(str::to_string);
     // +1: see `read_body_or_exit`.
     let mut body = resp.into_body();
-    let mut reader = Until {
-        inner: body.with_config().limit(limit.saturating_add(1)).reader(),
-        at: deadline,
-    };
     let mut buf = Vec::new();
-    let failed = reader.read_to_end(&mut buf).err();
+    let failed = body
+        .with_config()
+        .limit(limit.saturating_add(1))
+        .reader()
+        .read_to_end(&mut buf)
+        .err();
     // Refused for size is actionable (lower `--max-tokens`); "unreadable" is not. ureq wraps its
     // own error in the `io::Error`.
     let oversized = failed.as_ref().is_some_and(|e| {
@@ -546,32 +522,26 @@ pub fn is_retryable(e: &ureq::Error) -> bool {
     }
 }
 
-/// Bound on a `get_raw` body read, which no agent timeout reaches; matches the callers'
-/// 15-second global timeout.
-const GET_DEADLINE: Duration = Duration::from_secs(15);
-
+/// GETs with `recv` as the deadline for the whole call, as `post_raw` does.
 pub fn get_raw(
     agent: &ureq::Agent,
     url: &str,
     headers: &[(&str, String)],
     limit: u64,
+    recv: Duration,
 ) -> Result<Resp, ureq::Error> {
-    let mut req = agent.get(url);
+    let mut req = agent.get(url).config().timeout_global(Some(recv)).build();
     for (k, v) in headers {
         req = req.header(*k, v);
     }
-    // Taken before `call()`: inline in `read_resp`'s arguments it would start after the head
-    // arrived, giving the body a fresh window.
-    let deadline = Instant::now() + GET_DEADLINE;
-    Ok(read_resp(req.call()?, limit, deadline))
+    Ok(read_resp(req.call()?, limit))
 }
 
 /// POSTs `body` with `recv` as the deadline for the **whole call**, typically a member's
 /// remaining budget.
 ///
-/// Only `timeout_global` bounds the call as a whole: per-phase timeouts each get the full budget,
-/// and `timeout_recv_body` bounds silence, not a dripping body. The agent leaves it `None` so
-/// each call sets its own.
+/// `timeout_global` bounds the call as a whole, a dripping body included; the agent leaves it
+/// `None` so each call sets its own.
 pub fn post_raw(
     agent: &ureq::Agent,
     url: &str,
@@ -580,9 +550,6 @@ pub fn post_raw(
     limit: u64,
     recv: Duration,
 ) -> Result<Resp, ureq::Error> {
-    // Taken before `send`: otherwise a peer could stall the head until `recv` nearly elapses,
-    // then drip the body through a second full window.
-    let deadline = Instant::now() + recv;
     let mut req = agent
         .post(url)
         .config()
@@ -592,7 +559,7 @@ pub fn post_raw(
     for (k, v) in headers {
         req = req.header(*k, v);
     }
-    Ok(read_resp(req.send(body)?, limit, deadline))
+    Ok(read_resp(req.send(body)?, limit))
 }
 
 #[cfg(test)]

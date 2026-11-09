@@ -214,10 +214,8 @@ fn run_bx(port: u16, args: &[&str]) -> (Output, Duration) {
 #[test]
 fn stream_outlives_the_timeout_while_chunks_keep_arriving() {
     // 3s of streaming under a 2s timeout: fine, because no single gap comes close to 2s.
-    // Anchoring the deadline to the response headers instead would abort this at 2s.
-    //
-    // Also the tripwire for the `=3.4.0` pin: ureq 3.4.1 (#1194) makes `timeout_recv_body` a
-    // total budget, which turns this red.
+    // Anchoring the deadline to the response headers, or any total budget (`recv_body` since
+    // ureq 3.4.1), would abort this at 2s.
     const CHUNKS: usize = 10;
     let port = serve_sse(CHUNKS, Duration::from_millis(300), true);
     let (out, elapsed) = run_bx(port, &["--timeout", "2"]);
@@ -422,9 +420,8 @@ fn a_connection_that_cannot_be_made_is_a_network_error() {
 
 #[test]
 fn missing_response_headers_time_out() {
-    // The header wait has no timeout of its own; it inherits the send-phase deadline. ureq
-    // therefore blames `send request`, so bx renames the phase — but the assertion stays
-    // off the exact wording, which is a ureq implementation detail.
+    // ureq names the phase `receive response`; bx renames it, so the assertion stays off ureq's
+    // wording.
     let port = serve_silence();
     let (out, elapsed) = run_bx(port, &["--timeout", "2"]);
 
@@ -433,6 +430,31 @@ fn missing_response_headers_time_out() {
     assert!(stderr.contains("no response headers"), "stderr: {stderr}");
     assert!(elapsed >= Duration::from_secs(2), "gave up in {elapsed:?}");
     assert!(elapsed < PATIENCE, "hung for {elapsed:?}");
+}
+
+/// A head trickled a byte at a time never goes silent, so only the head's own total budget
+/// stops it; the per-read bound alone would wait until the server gave up.
+#[test]
+fn a_trickled_header_is_bounded_by_the_dial_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = read_request(&mut sock);
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nX-Slow: ");
+        let started = Instant::now();
+        while started.elapsed() < STALL && sock.write_all(b"a").is_ok() {
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+    let (out, elapsed) = run_bx(port, &["--timeout", "2"]);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(5), "stderr: {stderr}");
+    assert!(stderr.contains("no response headers"), "stderr: {stderr}");
+    assert!(elapsed < PATIENCE, "took {elapsed:?}");
 }
 
 // ── what reaches stdout ──────────────────────────────────────────────
