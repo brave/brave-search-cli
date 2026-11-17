@@ -1,5 +1,8 @@
 name: Publish npm
 
+# Authentication is OIDC trusted publishing. On npmjs.com, the trusted publisher
+# of every package under npm/ must name this file exactly, publish-npm.yml, and
+# the GitHub environment npm-publish.
 on:
   workflow_dispatch:
     inputs:
@@ -22,24 +25,26 @@ concurrency:
 
 jobs:
   publish:
+    if: github.repository == 'brave/brave-search-cli'
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
       contents: read # gh release download
-      id-token: write # npm provenance attestation
+      id-token: write # npm trusted publishing and provenance
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       # Only the binaries come from the release tag; the npm package files come
       # from the dispatched ref (tags up to v1.5.0 predate npm/).
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Node 24 for npm >= 11: it refuses to implicitly move the "latest"
       # dist-tag backwards, which nothing else here would catch.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Resolve release
         id: release
@@ -122,18 +127,19 @@ jobs:
             "$t/brave-brave-search-cli-linux-x64-$VERSION.tgz"
           "$t/smoke/bin/bx" --version | grep -qx "bx $VERSION"
 
+      # --ignore-scripts keeps a lifecycle script from running during the publish.
       - name: Publish to npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
 
-          flags=(--access public)
+          flags=(--access public --ignore-scripts)
           if [ "$DRY_RUN" = "true" ]; then
             flags+=(--dry-run)
           else
-            flags+=(--provenance) # attests this packaging run; needs id-token: write
+            # Automatic under trusted publishing from a public repo; kept explicit.
+            flags+=(--provenance)
           fi
 
           # Versions are immutable: skip already-published ones so re-runs after
