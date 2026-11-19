@@ -121,7 +121,8 @@ if ($Version -match "^[vV](?<num>.+)$") {
     $versionNum = $Version
 }
 
-if (-not ($versionNum -match "^\d+\.\d+\.\d+")) {
+# Anchored: the version is interpolated into the download URL and a temp path.
+if (-not ($versionNum -match "^[0-9]+\.[0-9]+\.[0-9]+$")) {
     Fail "invalid version format: $Version" "expected vX.Y.Z (e.g., v1.0.0)"
 }
 
